@@ -1,0 +1,517 @@
+openapi: 3.1.0
+
+info:
+  title: Gatecrash API
+  version: 1.0.0-volume1
+  description: |
+    The HTTP contract the Gatecrash app must satisfy.
+
+    `spec/conformance/` runs a black-box suite against it, and the same suite is
+    validated against the in-memory `spec/reference/`. The front end in
+    `spec/frontend/` talks only to this contract, never to anything Rails-specific.
+
+    Scope is Volume 1: browse, order, hosted Checkout, webhook fulfilment, ledger.
+    Refunds, disputes, subscriptions and marketplace payouts arrive in later volumes.
+
+    Errors use RFC 9457 Problem Details (`application/problem+json`).
+
+servers:
+  - url: http://localhost:{port}
+    variables:
+      port:
+        default: "3000"
+        description: the Rails app and the reference implementation both default to 3000
+
+tags:
+  - name: catalogue
+  - name: orders
+  - name: webhooks
+  - name: admin
+
+paths:
+
+  /api/events:
+    get:
+      tags: [catalogue]
+      summary: List events currently on sale
+      operationId: listEvents
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/EventSummary" }
+          description: OK
+
+  /api/events/{slug}:
+    get:
+      tags: [catalogue]
+      summary: Event detail with ticket types and live availability
+      operationId: getEvent
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+          description: OK
+        "404":
+          $ref: "#/components/responses/Problem"
+
+  /api/orders:
+    post:
+      tags: [orders]
+      summary: Create an order and hold inventory
+      operationId: createOrder
+      description: |
+        Holds inventory for 15 minutes. **Requires an `Idempotency-Key`.**
+
+        - Key unseen: process normally and store the response.
+        - Key seen, identical request fingerprint: replay the stored response
+          byte-for-byte, including the original status code.
+        - Key seen, different fingerprint: `422`. Reusing a key for a different
+          request is a client bug and must be loud.
+        - Key seen, original still in flight: `409`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateOrderRequest" }
+      responses:
+        "201":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+          description: Created — or a replay of the original creation
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          description: |
+            Validation failure, insufficient availability, or idempotency-key reuse
+            with a different payload.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /api/orders/{id}:
+    get:
+      tags: [orders]
+      summary: Order status
+      operationId: getOrder
+      description: The front end polls this after returning from Checkout.
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+          description: OK
+        "404":
+          $ref: "#/components/responses/Problem"
+
+  /api/orders/{id}/checkout:
+    post:
+      tags: [orders]
+      summary: Start payment — create a provider Checkout Session
+      operationId: createCheckout
+      description: |
+        Creates a `Payment` and a provider-hosted Checkout Session that accepts cards
+        only, moves the order to `awaiting_payment`, and returns the URL to redirect the
+        customer to. A declined card is handled on the provider's page — the customer
+        retries there, within the same session — and does not change the order.
+
+        Calling this again on an order still awaiting payment returns a **fresh**
+        session — a customer who abandoned and came back needs a live URL, and provider
+        sessions expire. The previous session is expired at the provider first, so an
+        order never has two pages that can take payment. If the previous session has
+        already been paid and its confirmation has not yet arrived, nothing new is
+        opened and the response is `409`.
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payment_id, checkout_url, expires_at]
+                properties:
+                  payment_id: { type: string, format: uuid }
+                  checkout_url: { type: string, format: uri }
+                  expires_at: { type: string, format: date-time }
+          description: Session created
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          description: Order is not in a payable state (already paid, expired, or its hold has lapsed), or its previous session has already been paid and is awaiting confirmation.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "502":
+          description: The payment provider could not be reached, or would not close the previous session. Nothing was created; the order is unchanged.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /api/orders/{id}/tickets:
+    get:
+      tags: [orders]
+      summary: Tickets issued for a paid order
+      operationId: listTickets
+      description: Returns `409` unless the order is `paid`. Tickets exist if and only if payment succeeded.
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Ticket" }
+          description: OK
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+
+  /api/webhooks/stripe:
+    post:
+      tags: [webhooks]
+      summary: Provider webhook receiver
+      operationId: receiveStripeWebhook
+      description: |
+        Verified against the **raw request body** — never a re-serialised parse.
+
+        1. Verify the `Stripe-Signature` HMAC over the raw bytes → `400` on mismatch.
+           The header carries one `t` and one or more `v1` — one per active secret
+           while a secret is being rolled. Accept if any `v1` matches; ignore every
+           other scheme, however valid.
+        2. Reject timestamps outside the tolerance window (default 300s) → `400`.
+        3. Insert a `WebhookEvent`; a unique-violation on `provider_event_id` means we
+           have seen it before → `200`, do nothing.
+        4. Return `200` immediately and hand fulfilment to a background job.
+
+        Returning `200` for a duplicate is correct: the provider is telling us something
+        true that we have already acted on. Only signature and parse failures are `400`.
+      security: []
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: Accepted, or a duplicate that was safely ignored
+        "400":
+          description: Bad signature, stale timestamp, or unparseable body
+
+  /api/admin/orders/{id}/ledger:
+    get:
+      tags: [admin]
+      summary: Ledger transactions for an order
+      operationId: getOrderLedger
+      description: |
+        Exists chiefly so the conformance suite can assert invariant C8 — entries sum
+        to zero per currency. In a real deployment this sits behind proper admin auth.
+      security:
+        - adminToken: []
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/LedgerTransaction" }
+          description: OK
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+
+  /api/admin/ledger/reconcile:
+    post:
+      tags: [admin]
+      summary: Run the reconciler now
+      operationId: reconcileLedger
+      description: |
+        Books a `provider_fee` transaction for every paid order that does not have one
+        yet, reading the fee from the provider's balance transaction. The same work runs
+        on a schedule in the background; this endpoint exists for operators and for the
+        conformance suite (C14), which cannot wait on a scheduler. Idempotent: an order
+        whose fee is already booked is not touched.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [booked]
+                    properties:
+                      booked:
+                        type: integer
+                        description: Number of provider_fee transactions written by this run.
+          description: OK
+        "401":
+          $ref: "#/components/responses/Problem"
+
+components:
+
+  securitySchemes:
+    adminToken:
+      type: http
+      scheme: bearer
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-generated unique key, typically a UUID v4.
+      schema: { type: string, minLength: 8, maxLength: 255 }
+    OrderId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Problem:
+      description: RFC 9457 problem detail
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+
+  schemas:
+
+    Money:
+      type: object
+      description: |
+        Integer minor units plus ISO 4217 currency. Never a float, never a bare number.
+        Minor-unit scale is currency-dependent — JPY has 0 decimal places, KWD has 3.
+      required: [amount, currency]
+      additionalProperties: false
+      properties:
+        amount:
+          type: integer
+          format: int64
+          description: Minor units. 4500 with currency GBP is £45.00.
+          examples: [4500]
+        currency:
+          type: string
+          pattern: "^[A-Z]{3}$"
+          examples: ["GBP"]
+
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details.
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri, examples: ["https://gatecrash.dev/problems/insufficient-availability"] }
+        title: { type: string, examples: ["Not enough tickets remaining"] }
+        status: { type: integer, examples: [422] }
+        detail: { type: string }
+        instance: { type: string }
+        errors:
+          type: array
+          description: Field-level validation failures, when applicable.
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: { type: string }
+              message: { type: string }
+
+    EventSummary:
+      type: object
+      required: [id, slug, name, starts_at, venue_name, status, price_from]
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string, examples: ["hackney-nights-2026"] }
+        name: { type: string }
+        starts_at: { type: string, format: date-time }
+        venue_name: { type: string }
+        status: { $ref: "#/components/schemas/EventStatus" }
+        price_from: { $ref: "#/components/schemas/Money" }
+
+    Event:
+      allOf:
+        - $ref: "#/components/schemas/EventSummary"
+        - type: object
+          required: [ticket_types]
+          properties:
+            ticket_types:
+              type: array
+              items: { $ref: "#/components/schemas/TicketType" }
+
+    EventStatus:
+      type: string
+      enum: [draft, on_sale, sold_out, cancelled, completed]
+
+    TicketType:
+      type: object
+      required: [id, name, price, available]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, examples: ["Early Bird"] }
+        price: { $ref: "#/components/schemas/Money" }
+        available:
+          type: integer
+          minimum: 0
+          description: quantity_total − quantity_held − quantity_sold. Never negative.
+
+    CreateOrderRequest:
+      type: object
+      required: [event_id, email, items]
+      additionalProperties: false
+      properties:
+        event_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [ticket_type_id, quantity]
+            additionalProperties: false
+            properties:
+              ticket_type_id: { type: string, format: uuid }
+              quantity: { type: integer, minimum: 1, maximum: 10 }
+
+    Order:
+      type: object
+      required: [id, event_id, email, status, total, items, payments, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        status: { $ref: "#/components/schemas/OrderStatus" }
+        total: { $ref: "#/components/schemas/Money" }
+        hold_expires_at:
+          type: [string, "null"]
+          format: date-time
+          description: Null once the order is paid or expired.
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/OrderItem" }
+        payments:
+          type: array
+          description: One per provider session. A customer who leaves the payment page and comes back is two payments, one order; a declined card retried on the same Checkout page is one.
+          items: { $ref: "#/components/schemas/Payment" }
+        created_at: { type: string, format: date-time }
+
+    OrderStatus:
+      type: string
+      enum: [pending, awaiting_payment, paid, expired]
+
+    OrderItem:
+      type: object
+      required: [id, ticket_type_id, ticket_type_name, quantity, unit_price]
+      properties:
+        id: { type: string, format: uuid }
+        ticket_type_id: { type: string, format: uuid }
+        ticket_type_name: { type: string }
+        quantity: { type: integer, minimum: 1 }
+        unit_price:
+          allOf: [{ $ref: "#/components/schemas/Money" }]
+          description: Copied at order time. Never re-read from the ticket type — what the customer paid must not change when the organiser edits the price.
+
+    Payment:
+      type: object
+      required: [id, provider, status, amount, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        provider: { type: string, examples: ["stripe"] }
+        status: { $ref: "#/components/schemas/PaymentStatus" }
+        amount: { $ref: "#/components/schemas/Money" }
+        created_at: { type: string, format: date-time }
+
+    PaymentStatus:
+      type: string
+      description: |
+        Provider-neutral. Stripe's requires_confirmation / requires_action / succeeded
+        and Adyen's equivalents both map onto this set; the mapping table lives in
+        the book, chapter 9.
+
+        A payment reaches `succeeded` only via webhook — never via the customer's
+        redirect back from Checkout, which is a UX hint they control and can simply
+        never deliver.
+        There is no `failed`: a declined card is retried inside the same session,
+        which stays open. `cancelled` is a session that was expired before it was paid.
+      enum: [requires_payment, succeeded, cancelled]
+
+    Ticket:
+      type: object
+      required: [id, ticket_type_id, ticket_type_name, code, issued_at]
+      properties:
+        id: { type: string, format: uuid }
+        ticket_type_id: { type: string, format: uuid }
+        ticket_type_name: { type: string }
+        code:
+          type: string
+          description: Unique and unguessable. Scanned at the door.
+        issued_at: { type: string, format: date-time }
+
+    LedgerTransaction:
+      type: object
+      required: [id, kind, occurred_at, entries]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [ticket_sale, provider_fee, payout] }
+        order_id: { type: [string, "null"], format: uuid }
+        provider_ref:
+          type: [string, "null"]
+          description: |
+            The provider's id for the fact this transaction records — the balance
+            transaction id on a `provider_fee`. Null for facts we originate.
+        occurred_at:
+          type: string
+          format: date-time
+          description: When the money moved — not when we wrote the row.
+        entries:
+          type: array
+          minItems: 2
+          items: { $ref: "#/components/schemas/LedgerEntry" }
+
+    LedgerEntry:
+      type: object
+      required: [account, amount]
+      properties:
+        account:
+          type: string
+          enum: [psp_balance, bank, ticket_revenue, processing_fees]
+        amount:
+          allOf: [{ $ref: "#/components/schemas/Money" }]
+          description: Signed. Debits positive, credits negative. Entries in a transaction sum to zero per currency.

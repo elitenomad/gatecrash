@@ -1,0 +1,88 @@
+{
+  "_comment": [
+    "Deterministic seed data. Every implementation loads this file verbatim, so the",
+    "conformance suite can reference fixed UUIDs without an app-specific setup API.",
+    "IDs are hand-written and stable on purpose - do not regenerate them.",
+    "Reseed before each conformance run; several cases consume inventory."
+  ],
+  "organisers": [
+    {
+      "id": "0a1b2c3d-0000-4000-8000-000000000001",
+      "name": "Hackney Nights",
+      "email": "promoter@hackneynights.example"
+    }
+  ],
+  "events": [
+    {
+      "id": "0a1b2c3d-0000-4000-8000-000000000101",
+      "organiser_id": "0a1b2c3d-0000-4000-8000-000000000001",
+      "slug": "hackney-nights-spring",
+      "name": "Hackney Nights: Spring Session",
+      "starts_at": "2026-05-14T20:00:00Z",
+      "venue_name": "The Moth Club",
+      "status": "on_sale",
+      "ticket_types": [
+        {
+          "id": "0a1b2c3d-0000-4000-8000-000000000201",
+          "name": "Early Bird",
+          "price_amount": 2250,
+          "price_currency": "GBP",
+          "quantity_total": 100
+        },
+        {
+          "id": "0a1b2c3d-0000-4000-8000-000000000202",
+          "name": "General Admission",
+          "price_amount": 4500,
+          "price_currency": "GBP",
+          "quantity_total": 400
+        }
+      ]
+    },
+    {
+      "id": "0a1b2c3d-0000-4000-8000-000000000102",
+      "organiser_id": "0a1b2c3d-0000-4000-8000-000000000001",
+      "slug": "tiny-room-session",
+      "name": "Tiny Room Session",
+      "starts_at": "2026-06-02T19:30:00Z",
+      "venue_name": "Corsica Studios",
+      "status": "on_sale",
+      "ticket_types": [
+        {
+          "_comment": "Deliberately tiny. This is the row the oversell test attacks.",
+          "id": "0a1b2c3d-0000-4000-8000-000000000203",
+          "name": "Limited Capacity",
+          "price_amount": 1200,
+          "price_currency": "GBP",
+          "quantity_total": 5
+        },
+        {
+          "_comment": "Reserved for the hold-expiry case. C7 drains 'Limited Capacity', so C10 must not share it.",
+          "id": "0a1b2c3d-0000-4000-8000-000000000205",
+          "name": "Hold Expiry Probe",
+          "price_amount": 800,
+          "price_currency": "GBP",
+          "quantity_total": 20
+        }
+      ]
+    },
+    {
+      "id": "0a1b2c3d-0000-4000-8000-000000000103",
+      "organiser_id": "0a1b2c3d-0000-4000-8000-000000000001",
+      "slug": "yen-showcase",
+      "name": "Tokyo Showcase",
+      "starts_at": "2026-07-11T18:00:00Z",
+      "venue_name": "Shibuya WWW",
+      "status": "on_sale",
+      "ticket_types": [
+        {
+          "_comment": "JPY has zero minor units. Any implementation that hardcodes /100 breaks here, which is the point.",
+          "id": "0a1b2c3d-0000-4000-8000-000000000204",
+          "name": "Advance",
+          "price_amount": 4000,
+          "price_currency": "JPY",
+          "quantity_total": 50
+        }
+      ]
+    }
+  ]
+}

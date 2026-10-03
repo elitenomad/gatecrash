@@ -1,0 +1,106 @@
+require "test_helper"
+
+module Orders
+  class ExpireHoldsTest < ActiveSupport::TestCase
+    setup do
+      @tt = build_ticket_type(total: 10)
+      @order = place_order(ticket_type: @tt, quantity: 3)
+    end
+
+    def lapse!(order = @order) = order.update_column(:hold_expires_at, 1.minute.ago)
+
+    test "leaves live holds alone" do
+      assert_equal 0, Orders::ExpireHolds.call
+      assert_predicate @order.reload, :pending?
+      assert_equal 3, @tt.reload.quantity_held
+    end
+
+    test "expires a lapsed hold and returns its inventory" do
+      lapse!
+      assert_equal 1, Orders::ExpireHolds.call
+      assert_predicate @order.reload, :expired?
+      assert_equal 0, @tt.reload.quantity_held
+      assert_nil @order.hold_expires_at
+    end
+
+    test "releases inventory exactly once when the sweeper runs repeatedly" do
+      # Double-release is the bug this guards. Decrementing quantity_held without
+      # gating on the state transition takes the counter negative on a second run.
+      lapse!
+      3.times { Orders::ExpireHolds.call }
+      assert_equal 0, @tt.reload.quantity_held
+      assert_operator @tt.available, :>=, 0
+      assert_equal 10, @tt.available
+    end
+
+    test "never touches a paid order" do
+      @order.update_columns(status: "paid", hold_expires_at: 1.minute.ago)
+      assert_equal 0, Orders::ExpireHolds.call
+      assert_predicate @order.reload, :paid?
+      assert_equal 3, @tt.reload.quantity_held
+    end
+
+    test "expires orders awaiting payment as well as pending ones" do
+      # A customer who was declined and gave up sends no event. The clock is
+      # the only thing that will ever give their seats back.
+      @order.update_column(:status, "awaiting_payment")
+      lapse!
+      assert_equal 1, Orders::ExpireHolds.call
+      assert_predicate @order.reload, :expired?
+      assert_equal 0, @tt.reload.quantity_held
+    end
+
+    test "closes the payment page before giving the seats back" do
+      # A hold released while its session is open puts the seats back on sale
+      # while the customer can still pay for them.
+      psp = FakePsp.new
+      payment = Payments::StartCheckout.call(order: @order, psp:).payment
+      lapse!
+
+      assert_equal 1, Orders::ExpireHolds.call(psp:)
+      assert_equal "expired", psp.statuses[payment.provider_ref]
+      assert_predicate payment.reload, :cancelled?
+      assert_predicate @order.reload, :expired?
+      assert_equal 0, @tt.reload.quantity_held
+    end
+
+    test "a customer who paid as the hold lapsed keeps their seats" do
+      # The provider refuses to expire a session that has been paid, and the
+      # refusal is the answer: the webhook is on its way, and the order is theirs.
+      psp = FakePsp.new
+      payment = Payments::StartCheckout.call(order: @order, psp:).payment
+      psp.statuses[payment.provider_ref] = "complete"
+      lapse!
+
+      assert_equal 0, Orders::ExpireHolds.call(psp:)
+      assert_predicate @order.reload, :awaiting_payment?
+      assert_equal 3, @tt.reload.quantity_held
+
+      completed = { "id" => payment.provider_ref, "payment_status" => "paid" }
+      assert_equal :fulfilled, Payments::Fulfil.call(session: completed)
+    end
+
+    test "keeps the seats held while the provider cannot be reached" do
+      psp = FakePsp.new
+      payment = Payments::StartCheckout.call(order: @order, psp:).payment
+      psp.statuses[payment.provider_ref] = :unreachable
+      lapse!
+
+      assert_equal 0, Orders::ExpireHolds.call(psp:)
+      assert_predicate @order.reload, :awaiting_payment?
+      assert_equal 3, @tt.reload.quantity_held
+    end
+
+    test "expired inventory becomes available to someone else" do
+      full = build_ticket_type(total: 1)
+      first = place_order(ticket_type: full)
+      assert_equal 0, full.reload.available
+
+      lapse!(first)
+      Orders::ExpireHolds.call
+
+      assert_equal 1, full.reload.available
+      assert_nothing_raised { place_order(ticket_type: full) }
+    end
+  end
+end

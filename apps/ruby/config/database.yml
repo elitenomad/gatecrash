@@ -1,0 +1,38 @@
+# Postgres is the only infrastructure dependency in this stack. Solid Queue puts
+# the job backend in the same server as the domain data, on its own database so
+# job churn never competes with domain queries for connections or vacuum.
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 10 } %>
+  host: <%= ENV.fetch("PGHOST", "localhost") %>
+  port: <%= ENV.fetch("PGPORT", 5432) %>
+
+development:
+  primary:
+    <<: *default
+    database: gatecrash_development
+  queue:
+    <<: *default
+    database: gatecrash_development_queue
+    migrations_paths: db/queue_migrate
+
+test:
+  primary:
+    <<: *default
+    database: gatecrash_test
+  queue:
+    <<: *default
+    database: gatecrash_test_queue
+    migrations_paths: db/queue_migrate
+
+production:
+  primary: &primary_production
+    <<: *default
+    database: gatecrash_production
+    username: gatecrash
+    password: <%= ENV["GATECRASH_DATABASE_PASSWORD"] %>
+  queue:
+    <<: *primary_production
+    database: gatecrash_production_queue
+    migrations_paths: db/queue_migrate

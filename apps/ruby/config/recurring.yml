@@ -1,0 +1,20 @@
+# Solid Queue's scheduler. Postgres is the only dependency — no cron, no
+# separate scheduler process.
+development: &default
+  expire_holds:
+    class: ExpireHoldsJob
+    schedule: every second
+  book_fees:
+    class: BookFeesJob
+    schedule: every 5 seconds
+  prune_idempotency_keys:
+    class: PruneIdempotencyKeysJob
+    schedule: every hour
+
+production:
+  <<: *default
+
+test:
+  expire_holds:
+    class: ExpireHoldsJob
+    schedule: every minute

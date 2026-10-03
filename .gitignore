@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.DS_Store
+.env
+node_modules/
+.ruby-lsp/
+
+# written and removed by spec/conformance/mutation_test.py
+spec/reference/_mutant.py
