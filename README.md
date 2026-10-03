@@ -1,7 +1,8 @@
 # Gatecrash
 
 A ticketing platform for live events that takes money correctly — the application
-built in the book *Modern Payments with Ruby on Rails*.
+built in the book *Modern Payments with Ruby on Rails*, which you can read at
+**https://elitenomad.github.io/modern-payments/**, or download there as a PDF.
 
 Rails 8 · Ruby 3.4 · PostgreSQL · Solid Queue. Postgres is the only infrastructure:
 no Redis, no Docker.
