@@ -63,7 +63,10 @@ class OrderTest < ActiveSupport::TestCase
   end
 
   test "an order has many payments" do
-    2.times { build_payment(order: @order) }
+    # One per payment page. Only one page may be open at a time, so the first
+    # is closed before the second.
+    build_payment(order: @order).update!(status: "cancelled")
+    build_payment(order: @order)
     assert_equal 2, @order.reload.payments.count
   end
 

@@ -16,9 +16,15 @@ make ruby-conformance # terminal 4
 `HOLD_TTL_SECONDS=6` must be set on the server, the worker and the suite for `C10`,
 `C15` and `C17`. The make targets do this.
 
+Defaults apply in development and test only. Anywhere else the app refuses to boot
+without `PSP_SECRET_KEY`, `PSP_WEBHOOK_SECRET` and `ADMIN_TOKEN`: their defaults are
+printed in the book, so a server running on them accepts webhooks anyone can sign
+(`config/initializers/required_secrets.rb`).
+
 | env | default |
 |---|---|
 | `PSP_URL` | `http://localhost:4242` |
+| `PSP_SECRET_KEY` | `sk_test_fake` |
 | `PSP_WEBHOOK_SECRET` | `whsec_fake_psp_secret` |
 | `PSP_RETRY_BASE_DELAY` | `0.25` |
 | `IDEMPOTENCY_RETENTION_SECONDS` | `86400` |
@@ -91,7 +97,7 @@ bin/rails runner 'TicketType.first.update_column(:quantity_held, 10_000)'
 ## Tests
 
 ```sh
-make ruby-test    # 127 runs, 442 assertions — no PSP, no worker, no network
+make ruby-test    # 170 runs, 577 assertions — no PSP, no worker, no network
 ```
 
 Minitest, no factories, no mocking library. The conformance suite is black-box and

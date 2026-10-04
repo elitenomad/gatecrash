@@ -21,11 +21,20 @@ module Api
         payload:
       )
 
-      # nil means the unique index rejected it: we have seen this event and
-      # already acted on it. 200 is the honest answer — a 4xx would make the
-      # provider retry something true, for days.
-      return head :ok if event.nil?
+      if event.nil?
+        # The unique index rejected it: we have recorded this event before.
+        # Recorded is not processed. The row and the job are two writes to two
+        # databases, and if the second failed last time the provider got a 5xx
+        # and this redelivery is its retry. The job checks processed_at, so
+        # queueing it again is harmless.
+        event = WebhookEvent.find_by!(provider: "stripe", provider_event_id: payload.fetch("id"))
+        ProcessWebhookEventJob.perform_later(event.id) unless event.processed_at?
+        # 200 either way. A 4xx would make the provider retry something true,
+        # for days.
+        return head :ok
+      end
 
+      # If this raises, the provider gets a 5xx and redelivers: see above.
       ProcessWebhookEventJob.perform_later(event.id)
       head :ok
     rescue JSON::ParserError, KeyError => e

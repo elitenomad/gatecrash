@@ -27,8 +27,10 @@ module Orders
           next if order.payments.where(status: "requires_payment").exists?
           next unless order.try_transition_to!("expired", hold_expires_at: nil)
 
+          # Through lock_for_update, in id order, like every path that locks tiers.
+          tiers = TicketType.lock_for_update(order.items.map(&:ticket_type_id))
           order.items.each do |item|
-            tt = TicketType.lock("FOR UPDATE").find(item.ticket_type_id)
+            tt = tiers.fetch(item.ticket_type_id)
             tt.update!(quantity_held: tt.quantity_held - item.quantity)
           end
           expired += 1

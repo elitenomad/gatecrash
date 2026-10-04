@@ -64,6 +64,8 @@ class Psp
   MAX_BACKOFF = 5.0
 
   class << self
+    # The two secrets' defaults are for development and test only; anywhere
+    # else config/initializers/required_secrets.rb refuses to boot without them.
     def base_url    = ENV.fetch("PSP_URL", "http://localhost:4242")
     def retry_base_delay = Float(ENV.fetch("PSP_RETRY_BASE_DELAY", 0.25))
     def secret_key  = ENV.fetch("PSP_SECRET_KEY", "sk_test_fake")

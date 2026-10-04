@@ -149,6 +149,32 @@ module Payments
       assert_empty @order.reload.payments
     end
 
+    test "two checkouts at once leave one page that can take money" do
+      # A double-click. While the provider answers the first call, the second
+      # runs end to end: nothing to close, a session of its own, recorded. The
+      # first must not record a second open session on top.
+      psp = FakePsp.new
+      second = nil
+      psp.on_create = lambda do
+        psp.on_create = nil
+        second = StartCheckout.call(order: Order.find(@order.id), psp:)
+      end
+
+      first = StartCheckout.call(order: @order, psp:)
+
+      assert_predicate second, :ok?
+      assert_equal 409, first.status
+      assert_nil first.checkout_url, "the losing session's address never leaves the server"
+      assert_equal [second.payment], @order.payments.reload.to_a
+    end
+
+    test "the database refuses a second open payment on one order" do
+      # The re-check under the lock is what stops it; the index is what stops
+      # it if that check is ever lost.
+      build_payment(order: @order)
+      assert_raises(ActiveRecord::RecordNotUnique) { build_payment(order: @order) }
+    end
+
     test "return urls point back at the order" do
       psp = FakePsp.new
       StartCheckout.call(order: @order, return_url_base: "https://gatecrash.test", psp:)

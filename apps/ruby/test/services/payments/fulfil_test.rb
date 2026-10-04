@@ -75,6 +75,22 @@ module Payments
       assert_equal 1, @order.ledger_transactions.where(kind: "ticket_sale").count
     end
 
+    test "locks the order's tiers in id order, whatever order they were listed in" do
+      # Item by item would lock them as listed — here, largest id first — and
+      # an order listing the same tiers the other way round would hold one lock
+      # each and wait for the other. Postgres kills one; its payment is stranded.
+      order, = place_two_tier_order
+      order.transition_to!("awaiting_payment")
+      payment = build_payment(order:)
+
+      locks = tier_locks do
+        assert_equal :fulfilled, Fulfil.call(session: { "id" => payment.provider_ref, "payment_status" => "paid" })
+      end
+
+      assert_match(/ORDER BY "ticket_types"."id" ASC FOR UPDATE/, locks.sole)
+      assert_equal 2, order.reload.tickets.count
+    end
+
     test "ignores a session it has no payment for" do
       assert_equal :unknown_payment, Fulfil.call(session: { "id" => "cs_never_seen" })
       assert_predicate @order.reload, :awaiting_payment?

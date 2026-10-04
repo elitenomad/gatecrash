@@ -150,6 +150,9 @@ A payment *attempt* against an order. **An order has many payments.**
 > A `Payment` is one provider **session**, not one card. A declined card followed by a
 > good one on the same Checkout page is *one* payment: the decline happens inside the
 > session, and the session is what succeeds.
+>
+> Many payments, but at most one still `requires_payment` — one open page — per order
+> (§6, Paying). The database enforces it with a partial unique index.
 
 ### Ticket
 Issued **only** on payment success, one row per admitted person.
@@ -374,6 +377,9 @@ POST /api/orders/{id}/checkout
        ├─ lock the order; re-check it is still payable
        │    └─ not (the sweeper expired it meanwhile) ──▶ 409; record nothing,
        │         and the session's URL never leaves the server
+       ├─ re-check no other payment is requires_payment
+       │    └─ there is (a second checkout ran while the provider answered this
+       │         one) ──▶ 409; record nothing, and this URL never leaves either
        ├─ create Payment (requires_payment, provider_ref = session id)
        └─ order ──▶ awaiting_payment (unless it already is)
      return { checkout_url, expires_at }
@@ -389,6 +395,13 @@ page can no longer be paid, or the payment did and the expiry is refused. A refu
 re-read, not parsed — the error's wording is not a contract; the session's status is.
 The sweeper applies the same rule before it releases a hold (below).
 
+Closing first is not enough on its own. Two calls at once — a double-click, two tabs —
+both find nothing to close, both open a session, and both would record one. The re-check
+under the order lock is what stops the second, and a partial unique index on
+`payments (order_id) WHERE status = 'requires_payment'` is what stops it if the re-check
+is ever lost. The session that loses is never recorded and its URL is never returned:
+a page nobody has the address of cannot take money.
+
 ### The webhook (chapter 8 — where fulfilment actually happens)
 
 ```
@@ -398,9 +411,13 @@ POST /api/webhooks/stripe
   │       any other scheme is ignored, however valid
   ├─ reject timestamp outside tolerance       ──▶ 400
   ├─ insert WebhookEvent (unique provider_event_id)
-  │    └─ conflict ⇒ already seen ──▶ 200, do nothing
-  ├─ 200 immediately; hand off to a job
-  └─ job — acts on checkout.session.completed with payment_status = paid, and
+  │    └─ conflict ⇒ recorded before ──▶ 200
+  │         └─ not yet processed ──▶ queue the job again: this is the retry
+  ├─ queue the job                            ──▶ 5xx if that fails
+  ├─ 200 immediately
+  └─ job — retried on database errors (deadlock, lost connection), never on the
+     provider's, which it does not call; acts on
+     checkout.session.completed with payment_status = paid, and
      records-and-ignores everything else, payment_intent.payment_failed included:
      that decline is about one card inside a session the customer is still using
        ├─ payment already succeeded ──▶ done (a redelivery)
@@ -413,6 +430,14 @@ POST /api/webhooks/stripe
        ├─ write the ticket_sale ledger transaction   (same DB transaction as ──▶ paid)
        └─ mark processed_at
 ```
+
+> **Recorded is not processed.** The event row and the job are two writes, and with
+> Solid Queue in its own database no transaction covers both. If the second fails the
+> provider gets a 5xx and redelivers; that redelivery finds the row already there, and
+> must queue the job rather than assume it ran. The job checks `processed_at` and
+> fulfilment is idempotent, so queueing it twice is harmless. What the redelivery cannot
+> rescue — a job that keeps failing after the provider has its 200 — is what the alert
+> on unprocessed events is for.
 
 > Verify against the **raw request body**. Any framework that parses and re-serialises
 > JSON before you hash it will break the signature — and it will break it *intermittently*,

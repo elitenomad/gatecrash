@@ -18,6 +18,10 @@ class TicketType < ApplicationRecord
 
   # Take a row lock BEFORE reading availability. Reading first and locking after
   # is the classic oversell: two requests both see 1 remaining and both proceed.
+  #
+  # Every path that locks tiers comes through here, so every one takes them in
+  # id order. One that locked them in any other order could deadlock with the
+  # rest.
   def self.lock_for_update(ids)
     where(id: ids).order(:id).lock("FOR UPDATE").index_by(&:id)
   end

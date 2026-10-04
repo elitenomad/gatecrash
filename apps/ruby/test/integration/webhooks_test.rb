@@ -59,10 +59,11 @@ class WebhooksTest < ActionDispatch::IntegrationTest
     assert_equal 0, WebhookEvent.count
   end
 
-  test "answers a duplicate 200 and does not enqueue it twice" do
+  test "answers a duplicate 200 and does not process it twice" do
     raw = body(id: "evt_dup")
     post_webhook(raw, sign_payload(raw))
     assert_response :ok
+    perform_enqueued_jobs
 
     assert_no_enqueued_jobs do
       post_webhook(raw, sign_payload(raw))
@@ -71,6 +72,31 @@ class WebhooksTest < ActionDispatch::IntegrationTest
     # would make the provider retry it forever.
     assert_response :ok
     assert_equal 1, WebhookEvent.count
+  end
+
+  test "a failed enqueue answers 5xx, and the redelivery queues the job" do
+    # The row and the job are two writes to two databases. If the second
+    # fails, the provider must hear about it — and its redelivery, which finds
+    # the row already there, is the retry.
+    raw = body(id: "evt_lost")
+    ProcessWebhookEventJob.define_singleton_method(:perform_later) { |*| raise ActiveRecord::ConnectionNotEstablished }
+    begin
+      # Raised, not rescued — which a server turns into the 500 the provider
+      # redelivers on. (Tests see the exception itself.)
+      assert_raises(ActiveRecord::ConnectionNotEstablished) { post_webhook(raw, sign_payload(raw)) }
+    ensure
+      ProcessWebhookEventJob.singleton_class.remove_method(:perform_later)
+    end
+    assert_equal 1, WebhookEvent.unprocessed.count
+
+    assert_enqueued_with(job: ProcessWebhookEventJob) do
+      post_webhook(raw, sign_payload(raw))
+    end
+    assert_response :ok
+
+    perform_enqueued_jobs
+    assert_predicate @order.reload, :paid?
+    assert_empty WebhookEvent.unprocessed
   end
 
   test "rejects an unparseable body" do

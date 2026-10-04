@@ -77,8 +77,12 @@ module Payments
     private
 
     def issue_tickets(order)
-      order.items.includes(:ticket_type).each do |item|
-        tt = TicketType.lock("FOR UPDATE").find(item.ticket_type_id)
+      # Every tier at once, in id order, as Orders::Create takes them. Locking
+      # item by item takes them in whatever order the customer listed them, and
+      # two orders listing the same pair of tiers the other way round deadlock.
+      tiers = TicketType.lock_for_update(order.items.map(&:ticket_type_id))
+      order.items.each do |item|
+        tt = tiers.fetch(item.ticket_type_id)
         tt.update!(quantity_held: tt.quantity_held - item.quantity,
                    quantity_sold: tt.quantity_sold + item.quantity)
 

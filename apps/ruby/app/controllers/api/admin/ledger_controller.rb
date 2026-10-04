@@ -30,7 +30,8 @@ module Api
       def authenticate_admin!
         expected = ENV.fetch("ADMIN_TOKEN", "dev-admin-token")
         given = request.headers["Authorization"].to_s.delete_prefix("Bearer ")
-        return if ActiveSupport::SecurityUtils.secure_compare(expected, given)
+        # An empty token would match an empty header, which is no header at all.
+        return if expected.present? && ActiveSupport::SecurityUtils.secure_compare(expected, given)
 
         problem(401, "Unauthorized")
       end

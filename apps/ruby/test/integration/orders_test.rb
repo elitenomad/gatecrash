@@ -94,6 +94,16 @@ class OrdersTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  test "an empty admin token lets nobody in" do
+    # secure_compare("", "") is true, and an empty header is what no header is.
+    original = ENV["ADMIN_TOKEN"]
+    ENV["ADMIN_TOKEN"] = ""
+    post "/api/admin/ledger/reconcile"
+    assert_response :unauthorized
+  ensure
+    ENV["ADMIN_TOKEN"] = original
+  end
+
   test "admin reconcile requires the bearer token and reports what it booked" do
     post "/api/admin/ledger/reconcile"
     assert_response :unauthorized

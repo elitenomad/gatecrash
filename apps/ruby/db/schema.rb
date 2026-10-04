@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_01_01_000006) do
+ActiveRecord::Schema[8.0].define(version: 2026_01_01_000007) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -107,6 +107,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_01_01_000006) do
     t.string "status", default: "requires_payment", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.index ["order_id"], name: "index_one_open_payment_per_order", unique: true, where: "((status)::text = 'requires_payment'::text)"
     t.index ["order_id"], name: "index_payments_on_order_id"
     t.index ["provider", "provider_ref"], name: "index_payments_on_provider_and_provider_ref", unique: true
     t.check_constraint "status::text = ANY (ARRAY['requires_payment'::character varying, 'succeeded'::character varying, 'cancelled'::character varying]::text[])", name: "payments_status_valid"

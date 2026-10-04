@@ -33,6 +33,19 @@ module Orders
       assert_equal 10, @tt.available
     end
 
+    test "locks the order's tiers in id order, whatever order they were listed in" do
+      # The same order Orders::Create and Payments::Fulfil take them in, or this
+      # can deadlock against either.
+      order, tiers = place_two_tier_order
+      lapse!(order)
+
+      locks = tier_locks { Orders::ExpireHolds.call }
+
+      assert_match(/ORDER BY "ticket_types"."id" ASC FOR UPDATE/, locks.sole)
+      assert_predicate order.reload, :expired?
+      assert_equal [0, 0], tiers.map { |tt| tt.reload.quantity_held }
+    end
+
     test "never touches a paid order" do
       @order.update_columns(status: "paid", hold_expires_at: 1.minute.ago)
       assert_equal 0, Orders::ExpireHolds.call

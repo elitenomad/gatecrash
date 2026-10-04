@@ -155,7 +155,7 @@ paths:
         "404":
           $ref: "#/components/responses/Problem"
         "409":
-          description: Order is not in a payable state (already paid, expired, or its hold has lapsed), or its previous session has already been paid and is awaiting confirmation.
+          description: Order is not in a payable state (already paid, expired, or its hold has lapsed), its previous session has already been paid and is awaiting confirmation, or a concurrent call opened a session first. Nothing was recorded.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
@@ -204,11 +204,14 @@ paths:
            other scheme, however valid.
         2. Reject timestamps outside the tolerance window (default 300s) → `400`.
         3. Insert a `WebhookEvent`; a unique-violation on `provider_event_id` means we
-           have seen it before → `200`, do nothing.
-        4. Return `200` immediately and hand fulfilment to a background job.
+           have recorded it before → `200`, and if it was never processed, queue it
+           again: the redelivery is the retry.
+        4. Queue fulfilment as a background job → `5xx` if that fails, so the provider
+           redelivers. Otherwise return `200` immediately.
 
         Returning `200` for a duplicate is correct: the provider is telling us something
-        true that we have already acted on. Only signature and parse failures are `400`.
+        true that we already have. Recorded is not processed, though — the row and the
+        job are separate writes. Only signature and parse failures are `400`.
       security: []
       parameters:
         - name: Stripe-Signature

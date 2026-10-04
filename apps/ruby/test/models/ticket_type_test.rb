@@ -29,11 +29,16 @@ class TicketTypeTest < ActiveSupport::TestCase
 
   test "lock_for_update orders by id to avoid deadlocks" do
     # Two concurrent orders touching the same pair of tiers must take the locks
-    # in the same sequence, or they deadlock against each other.
+    # in the same sequence, or they deadlock against each other. Asked for in
+    # descending order, it must still lock in ascending order, in one statement.
     a = build_ticket_type(event: @tt.event)
-    ids = [@tt.id, a.id]
+    ids = [@tt.id, a.id].sort.reverse
     locked = nil
-    ActiveRecord::Base.transaction { locked = TicketType.lock_for_update(ids) }
-    assert_equal ids.sort, locked.keys.sort
+    locks = tier_locks do
+      ActiveRecord::Base.transaction { locked = TicketType.lock_for_update(ids) }
+    end
+
+    assert_match(/ORDER BY "ticket_types"."id" ASC FOR UPDATE/, locks.sole)
+    assert_equal ids.sort, locked.keys
   end
 end

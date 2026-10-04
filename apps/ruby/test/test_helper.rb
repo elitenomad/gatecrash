@@ -50,6 +50,28 @@ module ActiveSupport
                              status: "requires_payment")
     end
 
+    # One order across two tiers, listed largest id first, so its items come
+    # back in the opposite order to the one tiers must be locked in.
+    def place_two_tier_order(total: 10)
+      event = build_event
+      tiers = 2.times.map { |n| build_ticket_type(event:, name: "Tier #{n}", total:) }.sort_by(&:id).reverse
+      result = Orders::Create.call(
+        event_id: event.id, email: "buyer@example.test",
+        items: tiers.map { |tt| { "ticket_type_id" => tt.id, "quantity" => 1 } }
+      )
+      raise "order setup failed: #{result.error}" unless result.ok?
+
+      [result.order, tiers]
+    end
+
+    # The SQL of every row lock taken on ticket_types inside the block.
+    def tier_locks(&block)
+      sqls = []
+      record = ->(*, payload) { sqls << payload[:sql] if payload[:sql].match?(/FROM "ticket_types".*FOR UPDATE/m) }
+      ActiveSupport::Notifications.subscribed(record, "sql.active_record", &block)
+      sqls
+    end
+
     def sign_payload(body, secret: Psp.webhook_secret, timestamp: Time.current.to_i)
       digest = OpenSSL::HMAC.hexdigest("SHA256", secret, "#{timestamp}.#{body}")
       "t=#{timestamp},v1=#{digest}"

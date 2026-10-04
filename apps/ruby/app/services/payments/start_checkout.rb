@@ -29,12 +29,23 @@ module Payments
       )
 
       payment = nil
+      refusal = nil
       ActiveRecord::Base.transaction do
-        # The sweeper may have expired the order while the provider was
-        # answering. If so, record nothing and hand out no URL: a page nobody
-        # has the address of cannot take money.
         @order.lock!
-        raise ActiveRecord::Rollback unless @order.payable?
+        refusal =
+          if !@order.payable?
+            # The sweeper expired the order while the provider was answering.
+            "Order is not payable"
+          elsif @order.payments.exists?(status: "requires_payment")
+            # A second call for this order — a double-click, another tab — ran
+            # while we waited. It found nothing to close either, and its
+            # session is recorded now. Ours would be a second page that can
+            # take the same money.
+            "Another payment page for this order is already open"
+          end
+        # Either way, record nothing and hand out no URL: a page nobody has the
+        # address of cannot take money.
+        raise ActiveRecord::Rollback if refusal
 
         payment = @order.payments.create!(
           provider: "stripe", provider_ref: session.fetch("id"),
@@ -46,7 +57,7 @@ module Payments
         # order is already where it needs to be.
         @order.try_transition_to!("awaiting_payment") unless @order.awaiting_payment?
       end
-      return failure("Order is not payable", 409) if payment.nil?
+      return failure(refusal, 409) if refusal
 
       # The provider decides when its session dies, so read that back rather
       # than asserting a duration of our own. A locally-invented expiry agrees
