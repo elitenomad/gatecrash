@@ -29,11 +29,12 @@ is a test fixture. Never copy from it.
 
 ## Running it
 
-You need Ruby 3.4, Python 3 (stdlib only), and PostgreSQL 13 or later running
-locally with its headers — the Gemfile builds `pg` from source.
+You need Ruby 3.4.7, Python 3 (stdlib only), and PostgreSQL 13 or later running
+locally with its headers, `pg_config` on your `PATH` — the Gemfile builds `pg` from
+source. Chapter 4 of the book has the steps for Postgres.app, Homebrew and Debian.
 
 ```sh
-make ruby-setup        # create the databases, migrate, seed
+make ruby-setup        # install the gems, create the databases, migrate, seed
 make psp               # terminal 1 — the offline payment provider, :4242
 make ruby-server       # terminal 2 — the app, :3000
 make ruby-jobs         # terminal 3 — the Solid Queue worker

@@ -20,8 +20,8 @@ conformance: ## run the conformance suite against BASE_URL
 mutation-test: ## break the reference app 21 ways, assert the suite catches each
 	python3 spec/conformance/mutation_test.py
 
-ruby-setup: ## create + migrate + seed the Rails databases
-	cd apps/ruby && bin/rails db:prepare && bin/rails db:seed
+ruby-setup: ## install gems, then create + migrate + seed the Rails databases
+	cd apps/ruby && bundle install && bin/rails db:prepare && bin/rails db:seed
 
 ruby-test: ## run the Rails unit + integration tests (no PSP or worker needed)
 	cd apps/ruby && bin/rails test

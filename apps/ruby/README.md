@@ -6,15 +6,17 @@ suite 19/19.
 ## Run
 
 ```sh
-make ruby-setup      # create databases, migrate, seed from spec/fixtures/seed.json
+make ruby-setup      # bundle install, create databases, migrate, seed from spec/fixtures/seed.json
 make psp             # terminal 1 — offline payment provider
 make ruby-server     # terminal 2
 make ruby-jobs       # terminal 3 — Solid Queue worker
 make ruby-conformance # terminal 4
 ```
 
-`HOLD_TTL_SECONDS=6` must be set on the server, the worker and the suite for `C10`,
-`C15` and `C17`. The make targets do this.
+`HOLD_TTL_SECONDS=6` must be set on the server and the suite for `C10`, `C15` and
+`C17` (the worker reads each order's stored expiry, not the variable). The make
+targets do this. Unset in the suite, those cases skip; longer on the server, `C10`
+and `C15` fail.
 
 Defaults apply in development and test only. Anywhere else the app refuses to boot
 without `PSP_SECRET_KEY`, `PSP_WEBHOOK_SECRET` and `ADMIN_TOKEN`: their defaults are
@@ -60,7 +62,9 @@ involved, reproduces it.
 
 Building from source links the libpq that matches the server you are actually running,
 and the worker goes silent. The cost is that you need libpq headers and a compiler:
-Postgres.app and Homebrew both provide them, and on Debian it is `libpq-dev`.
+Postgres.app provides them; Homebrew's `postgresql@17` does too, but is keg-only, so
+put `$(brew --prefix postgresql@17)/bin` on your `PATH` for `pg_config`; on Debian it
+is `libpq-dev`.
 
 ## Where the interesting parts are
 
