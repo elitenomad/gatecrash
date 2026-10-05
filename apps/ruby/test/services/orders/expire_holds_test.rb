@@ -24,12 +24,32 @@ module Orders
     end
 
     test "releases inventory exactly once when the sweeper runs repeatedly" do
-      # Double-release is the bug this guards. Decrementing quantity_held without
-      # gating on the state transition takes the counter negative on a second run.
+      # Back to back, the second run never sees the order: `lapsed` only
+      # selects holding states. The overlap is the next test.
       lapse!
       3.times { Orders::ExpireHolds.call }
       assert_equal 0, @tt.reload.quantity_held
-      assert_operator @tt.available, :>=, 0
+      assert_equal 10, @tt.available
+    end
+
+    test "releases inventory exactly once when two runs overlap" do
+      # Both runs select the order. The provider call comes between selecting
+      # and locking, so that is where the second run lands: it expires the
+      # order while the first is still closing the page. The first must then
+      # find the hold gone. Without the re-read under the lock it checks its
+      # own stale copy and releases the seats a second time, and only the
+      # counter's own validation stops it going negative.
+      psp = FakePsp.new
+      Payments::StartCheckout.call(order: @order, psp:)
+      lapse!
+      psp.on_expire = lambda do
+        psp.on_expire = nil
+        assert_equal 1, Orders::ExpireHolds.call(psp:), "the second run expires it"
+      end
+
+      assert_equal 0, Orders::ExpireHolds.call(psp:), "the first run finds nothing left to do"
+      assert_predicate @order.reload, :expired?
+      assert_equal 0, @tt.reload.quantity_held
       assert_equal 10, @tt.available
     end
 

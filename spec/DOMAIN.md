@@ -230,6 +230,12 @@ holding seats, and the clock releases both.
                     └──▶ cancelled
 ```
 
+A status, not a second state machine. The diagram is what the provider's lifecycle
+produces, not a set of edges the app enforces: the order's transitions are ours to
+refuse, but a payment's status is a transcription of what the provider says happened
+to an object it owns, and a transcription that refused to record what it was told
+would be a log with holes in it.
+
 Provider-neutral by design. Stripe's `requires_action` / `requires_confirmation` /
 `succeeded` map onto these; so do Adyen's. The mapping table lives in the book,
 chapter 9.

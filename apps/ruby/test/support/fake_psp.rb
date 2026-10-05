@@ -3,7 +3,7 @@
 # better than a stubbed global anyway.
 class FakePsp
   attr_reader :calls, :statuses
-  attr_accessor :on_create # something else happening while the provider answers
+  attr_accessor :on_create, :on_expire # something else happening while the provider answers
 
   def initialize(session: nil, raise_error: nil)
     @session = session
@@ -31,6 +31,8 @@ class FakePsp
   # refusal does not say why.
   def expire_checkout_session(id)
     raise Psp::TransientError, "503 api_error" if @statuses[id] == :unreachable
+
+    on_expire&.call
     raise Psp::RequestError, "400: cannot be expired" unless @statuses[id] == "open"
 
     @statuses[id] = "expired"

@@ -16,7 +16,7 @@ module Ledger
     # of the session's payment intent's latest charge — three hops, folded into
     # one request by `expand` — and it is null until the capture settles, which
     # with Stripe's asynchronous capture can take up to an hour. Injected, as
-    # in RecordSale before it, so the accounting is testable without a provider.
+    # StartCheckout's provider is, so the accounting is testable without one.
     FEE_PATH = "payment_intent.latest_charge.balance_transaction".freeze
 
     DEFAULT_FEE_READER = lambda do |payment|
@@ -62,9 +62,16 @@ module Ledger
     rescue Psp::Error => e
       Rails.logger.warn("could not read provider fee for order #{order.id}: #{e.message}")
       false
-    rescue ActiveRecord::RecordNotUnique
+    rescue ActiveRecord::RecordNotUnique => e
       # Another worker booked it between our query and our insert. The partial
       # unique index on (order_id) where kind = 'provider_fee' decided who won.
+      return false if e.message.include?("index_one_provider_fee_per_order")
+
+      # The other index fired: this balance transaction is already booked to a
+      # different order. That is not a race, it is two orders claiming one
+      # charge, and every run will fail the same way until someone looks.
+      Rails.logger.error("FEE NOT BOOKED: order #{order.id}: #{reported.fetch(:ref)} " \
+                         "is already booked to another order")
       false
     end
   end

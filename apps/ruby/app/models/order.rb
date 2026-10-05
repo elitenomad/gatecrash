@@ -20,7 +20,9 @@ class Order < ApplicationRecord
   has_many :items, -> { order(:created_at) }, class_name: "OrderItem", dependent: :destroy
   has_many :payments, -> { order(:created_at) }, dependent: :destroy
   has_many :tickets, dependent: :destroy
-  has_many :ledger_transactions, dependent: :nullify
+  # Restrict, not nullify: nullifying rewrites ledger rows, which are never
+  # edited, and a provider_fee with no order hides every order's missing fee.
+  has_many :ledger_transactions, dependent: :restrict_with_exception
 
   composed_of :total,
               class_name: "Money",
@@ -37,9 +39,11 @@ class Order < ApplicationRecord
 
   # Paid, but the ledger has no provider_fee for it yet. The reconciler's
   # worklist: a query, not a flag, so booking the fee is what empties it.
+  # The NULLs are left out on purpose: `id NOT IN (…, NULL)` is never true,
+  # so a single fee row with no order would empty the list for everyone.
   scope :awaiting_fee, -> {
     where(status: "paid")
-      .where.not(id: LedgerTransaction.where(kind: "provider_fee").select(:order_id))
+      .where.not(id: LedgerTransaction.where(kind: "provider_fee").where.not(order_id: nil).select(:order_id))
   }
 
   STATUSES.each { |s| define_method("#{s}?") { status == s } }

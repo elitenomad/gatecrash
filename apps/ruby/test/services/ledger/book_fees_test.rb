@@ -16,6 +16,16 @@ module Ledger
       order.reload
     end
 
+    def capture_log
+      io = StringIO.new
+      original = Rails.logger
+      Rails.logger = ActiveSupport::Logger.new(io)
+      yield
+      io.string
+    ensure
+      Rails.logger = original
+    end
+
     # A fee reader that answers like the provider would, without a provider.
     def reports(fee, ref: nil, at: Time.zone.at(1_800_000_000))
       lambda do |payment|
@@ -80,6 +90,24 @@ module Ledger
       fee = yen.ledger_transactions.find_by!(kind: "provider_fee")
       assert_equal ["JPY"], fee.entries.map(&:currency).uniq
       assert_equal 80, fee.entries.find { |e| e.account == "processing_fees" }.amount
+    end
+
+    test "a charge already booked to another order is not booked again, and says so" do
+      Ledger::BookFees.call(fee_reader: reports(88, ref: "txn_same"))
+      other = paid_order(amount: 4500)
+
+      logged = capture_log { assert_equal 0, Ledger::BookFees.call(fee_reader: reports(88, ref: "txn_same")) }
+
+      assert_includes Order.awaiting_fee, other
+      assert_match(/FEE NOT BOOKED: order #{other.id}: txn_same/, logged)
+    end
+
+    test "one fee row with no order does not hide everyone else's" do
+      # `NOT IN` over a list containing NULL is never true. Left in, the row
+      # below would empty the worklist and no fee would be booked for anyone.
+      LedgerTransaction.insert!({ kind: "provider_fee", order_id: nil, occurred_at: Time.current,
+                                  created_at: Time.current, updated_at: Time.current })
+      assert_includes Order.awaiting_fee, @order
     end
 
     test "the database refuses a second provider_fee for one order" do

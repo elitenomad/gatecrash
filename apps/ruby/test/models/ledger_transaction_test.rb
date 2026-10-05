@@ -27,7 +27,7 @@ class LedgerTransactionTest < ActiveSupport::TestCase
 
   test "balances PER CURRENCY, not in aggregate" do
     # +100 GBP and -100 JPY sums to zero if you ignore currency. It is not
-    # balanced, and treating it as such silently invents an FX position.
+    # balanced: £1 is not ¥100, and netting them books an exchange nobody made.
     t = txn([entry("psp_balance", 100, "GBP"), entry("ticket_revenue", -100, "JPY")])
     assert_not_predicate t, :valid?
   end
@@ -46,7 +46,17 @@ class LedgerTransactionTest < ActiveSupport::TestCase
     order = place_order
     t = Ledger::RecordSale.call(order:)
     assert_raises(ActiveRecord::ReadOnlyRecord) { t.update!(kind: "payout") }
+    assert_raises(ActiveRecord::ReadOnlyRecord) { t.update_columns(kind: "payout") }
     assert_raises(ActiveRecord::ReadOnlyRecord) { t.entries.first.update!(amount: 1) }
+    assert_raises(ActiveRecord::ReadOnlyRecord) { t.entries.first.destroy }
+  end
+
+  test "an order cannot be destroyed out from under its ledger rows" do
+    # Nullifying their order_id instead would be an edit to the ledger.
+    order = place_order
+    Ledger::RecordSale.call(order:)
+    assert_raises(ActiveRecord::DeleteRestrictionError) { order.destroy }
+    assert_equal order.id, LedgerTransaction.sole.order_id
   end
 
   test "the database refuses a second ticket_sale for one order" do

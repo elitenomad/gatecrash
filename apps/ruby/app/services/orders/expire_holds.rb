@@ -17,14 +17,18 @@ module Orders
         next unless payment_page_closed?(order)
 
         ActiveRecord::Base.transaction do
+          # Waits for any other run holding this row, then re-reads it. The
+          # re-read is what makes the release exactly-once: a run that loaded
+          # this order before another expired it would otherwise check the copy
+          # it loaded, which still says the hold is live.
           order.lock!
-          # Re-check under the lock. The state transition is the guard that makes
-          # releasing inventory exactly-once: if another worker already expired
-          # this order, the transition fails and we do not release twice.
           next unless order.hold_expires_at && order.hold_expires_at <= @now
           # A session recorded since the page was closed can still take money.
           # Leave it for the next run, which will close it first.
           next if order.payments.where(status: "requires_payment").exists?
+          # The backstop. Every edge out of a holding state clears
+          # hold_expires_at, so the check above has already turned a second run
+          # away; this refuses it anyway if some future edge forgets to.
           next unless order.try_transition_to!("expired", hold_expires_at: nil)
 
           # Through lock_for_update, in id order, like every path that locks tiers.

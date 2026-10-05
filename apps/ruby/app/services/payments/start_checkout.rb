@@ -7,7 +7,7 @@ module Payments
     def self.call(...) = new(...).call
 
     # The provider is injected rather than reached for, the same way
-    # Ledger::RecordSale takes its fee reader. It is the only part of this
+    # Ledger::BookFees takes its fee reader. It is the only part of this
     # service that touches the network, and a test that wants to check what
     # happens when the provider is down should not have to stub a global.
     def initialize(order:, return_url_base: nil, psp: Psp)

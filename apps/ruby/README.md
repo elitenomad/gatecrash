@@ -42,7 +42,7 @@ serializer library. That is deliberate. The parts most worth teaching are also t
 parts most worth owning, and every dependency is one more thing that can be abandoned
 under a book that has to keep running.
 
-- **State machine** — four states and six edges, written out in `Order::TRANSITIONS`.
+- **State machine** — four states and four edges, written out in `Order::TRANSITIONS`.
   It does not need a DSL.
 - **Money** — `app/models/money.rb`, a frozen value object wired in with `composed_of`.
 - **Provider client** — `app/clients/psp.rb`, `Net::HTTP` against the raw REST API.
@@ -101,7 +101,7 @@ bin/rails runner 'TicketType.first.update_column(:quantity_held, 10_000)'
 ## Tests
 
 ```sh
-make ruby-test    # 172 runs, 588 assertions — no PSP, no worker, no network
+make ruby-test    # 176 runs, 603 assertions — no PSP, no worker, no network
 ```
 
 Minitest, no factories, no mocking library. The conformance suite is black-box and
