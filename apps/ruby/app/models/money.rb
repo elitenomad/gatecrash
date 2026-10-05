@@ -27,6 +27,8 @@ class Money
 
     @amount = amount
     @currency = currency.to_s.upcase
+    raise ArgumentError, "currency must be a three-letter code, got #{currency.inspect}" unless @currency.match?(/\A[A-Z]{3}\z/)
+
     freeze
   end
 
@@ -41,7 +43,9 @@ class Money
     self.class.new(amount * factor, currency)
   end
 
-  def <=>(other) = currency == other.currency ? amount <=> other.amount : nil
+  # nil, Ruby's "these cannot be compared", for another currency or a bare
+  # number — so `<` raises rather than guessing whether £1 is more than ¥1.
+  def <=>(other) = other.is_a?(Money) && currency == other.currency ? amount <=> other.amount : nil
   def ==(other) = other.is_a?(Money) && amount == other.amount && currency == other.currency
   alias eql? ==
   def hash = [amount, currency].hash
@@ -66,10 +70,13 @@ class Money
   def to_h = { amount:, currency: }
   def as_json(*) = to_h
 
+  # Integers to the end. Dividing by a float would print the wrong digit for
+  # any amount past 2**53 minor units, which a bigint column can hold.
   def to_s
     return "#{amount} #{currency}" if exponent.zero?
 
-    "#{format("%.#{exponent}f", amount.to_f / (10**exponent))} #{currency}"
+    major, minor = amount.abs.divmod(10**exponent)
+    "#{'-' if negative?}#{major}.#{minor.to_s.rjust(exponent, '0')} #{currency}"
   end
 
   def inspect = "#<Money #{self}>"

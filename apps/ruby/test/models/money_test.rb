@@ -13,6 +13,12 @@ class MoneyTest < ActiveSupport::TestCase
     assert_predicate m, :frozen?
   end
 
+  test "requires a three-letter currency code" do
+    [nil, "", "GB", "pounds", "£"].each do |bad|
+      assert_raises(ArgumentError, "#{bad.inspect} is not a currency") { Money.new(4500, bad) }
+    end
+  end
+
   test "refuses to combine different currencies rather than coercing" do
     assert_raises(Money::CurrencyMismatch) { Money.new(1, "GBP") + Money.new(1, "JPY") }
     assert_raises(Money::CurrencyMismatch) { Money.new(1, "GBP") - Money.new(1, "USD") }
@@ -28,6 +34,9 @@ class MoneyTest < ActiveSupport::TestCase
   test "comparison only within a currency" do
     assert_operator Money.new(100, "GBP"), :>, Money.new(50, "GBP")
     assert_nil Money.new(100, "GBP") <=> Money.new(50, "JPY")
+    assert_nil Money.new(100, "GBP") <=> 50
+    assert_raises(ArgumentError) { Money.new(100, "GBP") < Money.new(50, "JPY") }
+    assert_raises(ArgumentError) { Money.new(100, "GBP") > 0 }
     assert_equal Money.new(100, "GBP"), Money.new(100, "gbp")
     assert_not_equal Money.new(100, "GBP"), Money.new(100, "USD")
   end
@@ -66,6 +75,13 @@ class MoneyTest < ActiveSupport::TestCase
     assert_equal "45.00 GBP", Money.new(4500, "GBP").to_s
     assert_equal "4000 JPY",  Money.new(4000, "JPY").to_s   # NOT 40.00
     assert_equal "1.500 KWD", Money.new(1500, "KWD").to_s
+    assert_equal "-0.05 GBP", Money.new(-5, "GBP").to_s
+    assert_equal "-12.34 GBP", Money.new(-1234, "GBP").to_s
+  end
+
+  test "formats without a float, so large amounts keep every digit" do
+    # 2**53 + 1 pence. Divided as a float it prints ...40.92.
+    assert_equal "90071992547409.93 GBP", Money.new(9_007_199_254_740_993, "GBP").to_s
   end
 
   test "serialises to minor units and currency, never a float" do
