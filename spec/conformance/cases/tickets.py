@@ -1,6 +1,7 @@
 """C9 — chapter 9."""
 
-from _common import create_order, order_body, start_checkout, psp_complete, await_status
+from _common import (await_status, create_order, expect_charged, order_body, psp_complete,
+                     start_checkout)
 from harness import case, expect, expect_status
 
 
@@ -16,6 +17,7 @@ def c9(ctx):
            "empty list is not the same contract and hides fulfilment bugs", early)
 
     _, sid = start_checkout(ctx, order_id)
+    expect_charged(ctx, sid, r.json["total"])
     still = ctx.app.get(f"/api/orders/{order_id}/tickets")
     expect(still.status == 409, "starting checkout must not issue tickets", still)
 

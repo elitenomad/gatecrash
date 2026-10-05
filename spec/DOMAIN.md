@@ -446,8 +446,9 @@ POST /api/webhooks/stripe
 > on unprocessed events is for.
 
 > Verify against the **raw request body**. Any framework that parses and re-serialises
-> JSON before you hash it will break the signature — and it will break it *intermittently*,
-> as key order or unicode escaping shifts. Chapter 8 shows exactly how to get the raw
+> JSON before you hash it will break the signature: on every event if its whitespace
+> differs from the provider's, and only on some if just the escaping differs — the worse
+> case, because it passes testing. Chapter 8 shows exactly how to get the raw
 > bytes out of Rails, which makes it awkward in its own particular way.
 
 ### Hold expiry (background job)

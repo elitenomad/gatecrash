@@ -1,6 +1,6 @@
 """C12 — chapter 3."""
 
-from _common import YEN, buy, create_order, order_body
+from _common import YEN, buy, create_order, expect_charged, order_body, start_checkout
 from harness import case, expect, expect_status, walk
 
 
@@ -94,3 +94,9 @@ def c12b(ctx):
     expect(total == {"amount": 8000, "currency": "JPY"},
            "order total must be computed in minor units of the order's own currency",
            total)
+
+    # And at the provider. Stripe counts yen in yen, so ¥8,000 is 8000 there too;
+    # code that assumes two decimal places sends 800000 and charges a hundred times
+    # the price, with every number on our side still correct.
+    _, sid = start_checkout(ctx, resp.json["id"])
+    expect_charged(ctx, sid, total)

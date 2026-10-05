@@ -451,8 +451,7 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             return self._problem(502, "Payment provider unavailable")
 
-        form = (f"amount_total={amount}"
-                f"&line_items[0][price_data][currency]={currency.lower()}"
+        form = (f"line_items[0][price_data][currency]={currency.lower()}"
                 f"&line_items[0][price_data][unit_amount]={amount}"
                 f"&line_items[0][quantity]=1"
                 f"&allowed_payment_method_types[0]=card"

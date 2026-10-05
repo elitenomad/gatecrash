@@ -4,6 +4,7 @@ import uuid
 from harness import Failure, expect, expect_status, poll_until
 
 GA = "General Admission"
+EARLY = "Early Bird"     # chapter 7's cases only, so its availability is theirs to count
 TINY = "Limited Capacity"
 PROBE = "Hold Expiry Probe"
 YEN = "Advance"
@@ -47,6 +48,26 @@ def psp_complete(ctx, session_id, **query):
     return r.json
 
 
+def psp_session(ctx, session_id, expand=None):
+    """The session as the provider has it — what was actually asked for."""
+    path = f"/v1/checkout/sessions/{session_id}" + (f"?expand[]={expand}" if expand else "")
+    r = ctx.psp.get(path)
+    expect_status(r, 200, f"from fake-psp GET {path}")
+    return r.json
+
+
+def expect_charged(ctx, session_id, total):
+    """The provider must have been asked for exactly the order's total."""
+    s = psp_session(ctx, session_id)
+    asked = {"amount": s.get("amount_total"), "currency": (s.get("currency") or "").upper()}
+    expect(asked == total,
+           f"the provider was asked to charge {asked['amount']} {asked['currency']} for an "
+           f"order of {total['amount']} {total['currency']}. Every case before this one "
+           "could pass with that — the order, the payment row and the ledger all agree with "
+           "each other — while the customer's card is charged the wrong amount.",
+           {"session": asked, "order_total": total})
+
+
 def get_order(ctx, order_id):
     r = ctx.app.get(f"/api/orders/{order_id}")
     expect_status(r, 200, f"from GET /api/orders/{order_id}")
@@ -54,9 +75,21 @@ def get_order(ctx, order_id):
 
 
 def await_status(ctx, order_id, want, timeout=20):
-    return poll_until(
-        lambda: (lambda o: o if o["status"] == want else None)(get_order(ctx, order_id)),
-        timeout=timeout, what=f"order {order_id} to reach {want!r}")
+    seen = []
+
+    def reached():
+        order = get_order(ctx, order_id)
+        seen.append(order["status"])
+        return order if order["status"] == want else None
+
+    try:
+        return poll_until(reached, timeout=timeout, what=f"order {order_id} to reach {want!r}")
+    except Failure:
+        hint = (" Fulfilment runs in a background job: if the webhook was answered 200 and "
+                "nothing moved, is the worker running? (With Rails, bin/jobs.)"
+                if want == "paid" else "")
+        raise Failure(f"order {order_id} never reached {want!r} in {timeout}s; it is still "
+                      f"{seen[-1]!r}.{hint}") from None
 
 
 def availability(ctx, tt_name):

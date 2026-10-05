@@ -58,6 +58,7 @@ def account_total(txns, account):
 
 
 FEE_DELAY = 5
+REPORTED_FEE = 97
 
 
 def _reported_fee(ctx, sid):
@@ -79,7 +80,9 @@ def c14(ctx):
     # Paid — but the capture has not settled, so the balance transaction that
     # carries the fee is still null. With Stripe's asynchronous capture that can
     # last up to an hour; here it lasts FEE_DELAY seconds.
-    psp_complete(ctx, sid, fee_delay=FEE_DELAY)
+    # A fee no pricing formula produces: 1.5% + 20p of £45 is 88p, and this is 97p.
+    # An app that computes the fee instead of reading it cannot agree with it.
+    psp_complete(ctx, sid, fee_delay=FEE_DELAY, fee=REPORTED_FEE)
     order = await_status(ctx, order_id, "paid")
     total = order["total"]["amount"]
 
@@ -99,6 +102,10 @@ def c14(ctx):
     # not from the app, so an app that invents a fee cannot agree with itself.
     bt = _reported_fee(ctx, sid)
     expect(bt is not None, "the fake provider never reported the fee", sid)
+    expect(bt["amount"] == total,
+           f"the provider charged {bt['amount']} for an order of {total}. The fee is a "
+           "share of what was charged, so a wrong charge makes every number after it wrong.",
+           {"charged": bt["amount"], "order_total": total})
 
     r = ctx.app.post("/api/admin/ledger/reconcile", admin=True)
     expect_status(r, 200, "from POST /api/admin/ledger/reconcile")
@@ -114,8 +121,15 @@ def c14(ctx):
            "provider_fee.provider_ref must be the provider's balance transaction id — "
            "that link is what makes the ledger reconcilable against their report",
            {"provider_ref": fee.get("provider_ref"), "expected": bt["id"]})
+    accounts = sorted({e["account"] for e in fee["entries"]})
+    expect("processing_fees" in accounts,
+           "the provider_fee transaction has no processing_fees entry. The fee is an "
+           "expense; booked anywhere else — ticket_revenue, say — it is netted off the top "
+           "and the books can no longer say what the provider costs.", accounts)
     expect(account_total([fee], "processing_fees") == bt["fee"],
-           "the fee booked must be the fee the provider reports, not an estimate",
+           f"the fee booked must be the fee the provider reports ({bt['fee']} here, which "
+           "no pricing formula gives) — not an estimate, and not a percentage worked out "
+           "on our side",
            {"booked": account_total([fee], "processing_fees"), "provider": bt["fee"]})
 
     expect(account_total(txns, "ticket_revenue") == -total,

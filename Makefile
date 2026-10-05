@@ -17,7 +17,7 @@ conformance: ## run the conformance suite against BASE_URL
 	cd spec/conformance && HOLD_TTL_SECONDS=$(HOLD_TTL) \
 		python3 run.py --base-url $(BASE_URL) --psp-url $(PSP_URL)
 
-mutation-test: ## break the reference app 21 ways, assert the suite catches each
+mutation-test: ## break the reference app 33 ways, assert the suite catches each
 	python3 spec/conformance/mutation_test.py
 
 ruby-setup: ## install gems, then create + migrate + seed the Rails databases

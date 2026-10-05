@@ -13,8 +13,11 @@ It implements the small slice of Stripe that Volume 1 actually touches, and it i
 
   - form-encoded request bodies with Stripe's bracket notation
   - `Idempotency-Key` handling on the provider side
-  - `Stripe-Signature: t=<ts>,v1=<hmac>` over the exact raw response body, signed
+  - `Stripe-Signature: t=<ts>,v1=<hmac>` over the exact raw request body, signed
     afresh for every delivery attempt, with one v1 per active secret during a roll
+  - event bodies pretty-printed, as Stripe's are, with the cardholder's accented
+    name escaped to ASCII — so a receiver that re-serialises before verifying
+    fails on every event, not one in fifty
   - webhook redelivery, so at-least-once is a fact you can observe
   - fees on a separate balance transaction, not on the session
   - declines as hosted Checkout does them for cards: the session stays open, the
@@ -22,8 +25,12 @@ It implements the small slice of Stripe that Volume 1 actually touches, and it i
   - session expiry: only an open session can be expired, and a refusal says no more
     than that — the caller re-fetches to learn whether it completed or lapsed
 
-Where it is unfaithful, it says so in a comment. It is a teaching tool, not a
-Stripe emulator.
+Where it is unfaithful, it says so in a comment. The ones a reader might trip on:
+one event per action; sessions that live thirty minutes, not Stripe's
+twenty-four hours; and balance transactions in the charge's own currency, with
+the same fixed 20 minor units of fee whatever that currency is — real Stripe
+settles into the account's currency, so a JPY sale on a GBP account has a GBP
+fee. It is a teaching tool, not a Stripe emulator.
 
 Run:
     WEBHOOK_URL=http://localhost:3000/api/webhooks/stripe python3 server.py
@@ -197,9 +204,8 @@ def sign(payload: bytes, timestamp: int, secret: str = WEBHOOK_SECRET) -> str:
         v1             = hex(HMAC_SHA256(secret, signed_payload))
 
     Note it signs the *raw bytes*. Any implementation that parses the JSON and
-    re-serialises before hashing will produce a different digest — and will fail
-    intermittently, as key order and unicode escaping shift. That failure mode is
-    the entire point of chapter 8.
+    re-serialises before hashing produces different bytes, and so a different
+    digest. deliver() makes sure it does on every event; see there.
     """
     signed = f"{timestamp}.".encode() + payload
     return hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
@@ -234,6 +240,17 @@ def build_event(event_type: str, obj: dict) -> dict:
     }
 
 
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Stripe treats a 3xx from a webhook endpoint as a failed delivery and
+    retries it. urllib would follow it, and turn the POST into a GET."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_WEBHOOK_OPENER = urllib.request.build_opener(_NoRedirects)
+
+
 def deliver(event: dict, *, bad_signature=False, age_seconds=0, attempts=3,
             roll=None, scheme="v1") -> dict:
     """
@@ -244,8 +261,14 @@ def deliver(event: dict, *, bad_signature=False, age_seconds=0, attempts=3,
     afresh, with its own timestamp, as Stripe does. `bad_signature`,
     `age_seconds`, `roll` and `scheme` exist so the conformance suite can prove
     what a receiver must accept and what it must refuse.
+
+    The body is pretty-printed, as Stripe's are, and json.dumps escapes every
+    non-ASCII character — the cardholder's name on a completed session among
+    them. A receiver that parses and re-serialises before verifying cannot get
+    these bytes back: a compact serialiser drops the whitespace, and one that
+    keeps it (Ruby's JSON.pretty_generate, say) writes the name back unescaped.
     """
-    payload = json.dumps(event, separators=(",", ":")).encode()
+    payload = json.dumps(event, indent=2).encode()
     secret = "whsec_wrong_secret" if bad_signature else WEBHOOK_SECRET
 
     result = {"event_id": event["id"], "type": event["type"], "attempts": []}
@@ -263,7 +286,7 @@ def deliver(event: dict, *, bad_signature=False, age_seconds=0, attempts=3,
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with _WEBHOOK_OPENER.open(req, timeout=10) as resp:
                 status = resp.status
         except urllib.error.HTTPError as e:
             status = e.code
@@ -301,14 +324,17 @@ def create_session(params: dict) -> dict:
     # payment_method_types is what survives it.
     methods = [m for m in UNPINNED_METHODS if not allowed or m in allowed]
 
+    if "amount_total" in params:
+        # Faithful: the total is Stripe's to compute from the line items, and it
+        # will not take one from you. Nor will this fake, or the conformance
+        # suite could never tell a wrong line item from a right total.
+        raise ParamError("Received unknown parameter: amount_total")
     amount, currency = 0, "gbp"
     for li in params.get("line_items") or []:
         pd = li.get("price_data") or {}
         qty = int(li.get("quantity", 1))
         amount += int(pd.get("unit_amount", 0)) * qty
         currency = pd.get("currency", currency)
-    if "amount_total" in params:  # convenience escape hatch, not a Stripe field
-        amount = int(params["amount_total"])
 
     sid = _id("cs_test_")
     session = {
@@ -392,8 +418,10 @@ def decline_card(sid: str, *, decline_code="generic_decline", hold=False, **kw):
 
     Faithful to hosted Checkout with cards: the customer sees the decline and may
     try another card, so the session stays `open` and nothing at the session level
-    changes. The intent goes back to requires_payment_method — Stripe has no
-    failed state for it — and the only event is payment_intent.payment_failed.
+    changes. The attempt leaves a `failed` Charge behind; the intent goes back to
+    requires_payment_method — a PaymentIntent has no failed state. Unfaithful by
+    omission: Stripe also sends charge.failed; the only event here is
+    payment_intent.payment_failed.
     """
     with STORE.lock:
         session = STORE.sessions.get(sid)
@@ -402,6 +430,19 @@ def decline_card(sid: str, *, decline_code="generic_decline", hold=False, **kw):
         if session["status"] != "open":
             raise SessionNotOpen(session["status"])
         intent = _intent_for(session)
+        charge = {
+            "id": _id("ch_"),
+            "object": "charge",
+            "amount": session["amount_total"],
+            "currency": session["currency"],
+            "captured": False,
+            "payment_intent": intent["id"],
+            "balance_transaction": None,
+            "failure_code": "card_declined",
+            "status": "failed",
+        }
+        STORE.charges[charge["id"]] = charge
+        intent["latest_charge"] = charge["id"]
         intent["status"] = "requires_payment_method"
         intent["last_payment_error"] = {
             "type": "card_error",
@@ -420,66 +461,81 @@ def _held(event: dict) -> dict:
     return {"event_id": event["id"], "type": event["type"], "attempts": [], "held": True}
 
 
-def complete_session(sid: str, *, succeed=True, hold=False, fee_delay=0, **kw):
+# A cardholder name with letters outside ASCII, so every completed session's
+# event carries some — see deliver().
+CARDHOLDER = "Zoë Ångström"
+
+
+def complete_session(sid: str, *, succeed=True, hold=False, fee_delay=0, fee=None, **kw):
     if not succeed:
         return decline_card(sid, hold=hold, **kw)
 
+    # One lock for the check and the change. The provider is the lock in
+    # chapter 9's race: an expire that slipped in between the two would be
+    # refused here, not quietly overtaken by a payment.
     with STORE.lock:
         session = STORE.sessions.get(sid)
         if session is None:
             return None, None
         if session["status"] == "expired":
             raise SessionNotOpen(session["status"])
-        already = session["status"] == "complete"
-
-    if not already:
-        fee = round(session["amount_total"] * FEE_PERCENT) + FEE_FIXED
-        bt = {
-            "id": _id("txn_"),
-            "object": "balance_transaction",
-            "amount": session["amount_total"],
-            "currency": session["currency"],
-            "fee": fee,
-            "net": session["amount_total"] - fee,
-            "status": "pending",
-            "created": int(time.time()),
-            # Faithful detail: Stripe does NOT put the fee on the session. It
-            # lives here, three hops away — session → payment intent → latest
-            # charge → balance transaction — and may not exist yet when the
-            # payment succeeds. That is what makes chapter 10's "estimate now
-            # or book it when it arrives?" a real decision.
-        }
-        with STORE.lock:
-            STORE.balance_transactions[bt["id"]] = bt
-            intent = _intent_for(session)
-            charge = {
-                "id": _id("ch_"),
-                "object": "charge",
-                "amount": session["amount_total"],
-                "currency": session["currency"],
-                "captured": True,
-                "payment_intent": intent["id"],
-                # Null until the capture settles, as with Stripe's asynchronous
-                # capture — the default in current API versions. `fee_delay`
-                # stretches that out so a case can watch it.
-                "balance_transaction": None if fee_delay else bt["id"],
-                "status": "succeeded",
-            }
-            STORE.charges[charge["id"]] = charge
-            if fee_delay:
-                STORE.fee_pending[charge["id"]] = (bt["id"], time.time() + fee_delay)
-            intent["status"] = "succeeded"
-            intent["latest_charge"] = charge["id"]
-            session["status"] = "complete"
-            session["payment_status"] = "paid"
+        if session["status"] == "open":
+            _pay(session, fee_delay=fee_delay, fee=fee)
 
     # Unfaithful by omission: Stripe also sends payment_intent.succeeded and
     # charge.succeeded here. One event per action keeps /_control/replay, which
     # redelivers the latest, pointed at the event the book is about.
-    event = build_event("checkout.session.completed", dict(session))
+    event = build_event("checkout.session.completed", copy.deepcopy(session))
     with STORE.lock:
         STORE.events.append(event)
     return session, _held(event) if hold else deliver(event, **kw)
+
+
+def _pay(session: dict, *, fee_delay=0, fee=None):
+    """Charge the session. `fee` overrides the pricing, so a case can ask for a
+    fee no formula would produce. Call with STORE.lock held."""
+    if fee is None:
+        fee = round(session["amount_total"] * FEE_PERCENT) + FEE_FIXED
+    bt = {
+        "id": _id("txn_"),
+        "object": "balance_transaction",
+        "amount": session["amount_total"],
+        "currency": session["currency"],
+        "fee": fee,
+        "net": session["amount_total"] - fee,
+        "status": "pending",
+        "created": int(time.time()),
+        # Faithful detail: Stripe does NOT put the fee on the session. It
+        # lives here, three hops away — session → payment intent → latest
+        # charge → balance transaction — and may not exist yet when the
+        # payment succeeds. That is what makes chapter 10's "estimate now
+        # or book it when it arrives?" a real decision.
+    }
+    STORE.balance_transactions[bt["id"]] = bt
+    intent = _intent_for(session)
+    charge = {
+        "id": _id("ch_"),
+        "object": "charge",
+        "amount": session["amount_total"],
+        "currency": session["currency"],
+        "captured": True,
+        "payment_intent": intent["id"],
+        # Null until the capture settles, as with Stripe's asynchronous
+        # capture — the default in current API versions. `fee_delay`
+        # stretches that out so a case can watch it.
+        "balance_transaction": None if fee_delay else bt["id"],
+        "status": "succeeded",
+    }
+    STORE.charges[charge["id"]] = charge
+    if fee_delay:
+        STORE.fee_pending[charge["id"]] = (bt["id"], time.time() + fee_delay)
+    intent["status"] = "succeeded"
+    intent["last_payment_error"] = None
+    intent["latest_charge"] = charge["id"]
+    session["status"] = "complete"
+    session["payment_status"] = "paid"
+    session["customer_details"] = {"email": session.get("customer_email"),
+                                   "name": CARDHOLDER}
 
 
 def _settle(charge: dict):
@@ -737,8 +793,11 @@ class Handler(BaseHTTPRequestHandler):
             except ParamError as e:
                 return self._err(400, "parameter_unknown", str(e))
             if key:
+                # The response as it was sent, not the live session: a replay
+                # after the session expired must still say what the first call
+                # said. That is the contract chapter 7 implements, too.
                 with STORE.lock:
-                    STORE.idempotency[key] = (fingerprint, session)
+                    STORE.idempotency[key] = (fingerprint, copy.deepcopy(session))
             return self._json(200, session)
 
         # ---- hosted page ---------------------------------------------------#
@@ -777,6 +836,7 @@ class Handler(BaseHTTPRequestHandler):
             # ?hold=1 records the event without sending it — see _held().
             # ?roll=before|after and ?scheme=v0 — see signature_header().
             # ?fee_delay=N keeps the charge's balance transaction null for N seconds.
+            # ?fee=N charges a fee of N minor units instead of the usual pricing.
             sid = path.split("/")[3]
             try:
                 session, delivery = complete_session(
@@ -786,6 +846,7 @@ class Handler(BaseHTTPRequestHandler):
                     bad_signature=query.get("bad_signature") == "1",
                     roll=query.get("roll"),
                     fee_delay=float(query.get("fee_delay", "0")),
+                    fee=int(query["fee"]) if "fee" in query else None,
                     scheme=query.get("scheme", "v1"),
                     age_seconds=int(query.get("age", "0")),
                 )

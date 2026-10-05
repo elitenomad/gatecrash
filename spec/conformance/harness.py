@@ -119,6 +119,21 @@ def poll_until(fn, *, timeout=15.0, interval=0.25, what="condition"):
     raise Failure(f"timed out after {timeout}s waiting for {what}")
 
 
+def steady(check, *, seconds=3.0, interval=0.25):
+    """Run `check` over and over for `seconds`, failing at the first violation.
+
+    For the assertions that something must NOT happen. One look after a fixed
+    sleep passes an app whose background job is merely slower than the sleep;
+    watching the whole window catches it whenever it moves.
+    """
+    deadline = time.time() + seconds
+    while True:
+        check()
+        if time.time() >= deadline:
+            return
+        time.sleep(interval)
+
+
 def walk(node, path="$"):
     """Yield (json_pointer, value) for every node in a parsed JSON document."""
     yield path, node

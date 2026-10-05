@@ -5,7 +5,7 @@ import time
 
 from _common import (PROBE, TINY, availability, await_status, create_order, get_order,
                      order_body, psp_complete, start_checkout)
-from harness import Skip, case, expect, expect_status, in_parallel
+from harness import Skip, case, expect, expect_status, in_parallel, steady
 
 
 @case("C7", "Overselling is impossible under concurrency", "ch9")
@@ -18,8 +18,10 @@ def c7(ctx):
     every hand test and fails here every time.
     """
     start = availability(ctx, TINY)
-    if start < 1:
-        raise Skip(f"tier already exhausted ({start} left) — reseed before running")
+    expect(start >= 0, "availability must never go negative — something oversold this "
+           "tier before the case even began", start)
+    if start == 0:
+        raise Skip("tier already exhausted — reseed before running")
 
     n = 12
     responses = in_parallel(
@@ -29,18 +31,28 @@ def c7(ctx):
             headers={"Idempotency-Key": f"c7-{i}-{time.time()}"}), n)
 
     errs = [r for r in responses if isinstance(r, Exception)]
-    expect(not errs, "no request may error outright", errs[:2])
+    expect(not errs, "no request may error outright — a request that times out or drops "
+           "under load is one the customer will retry, against a tier that may by then "
+           "have held their seat for them", errs[:2])
 
     created = [r for r in responses if r.status == 201]
     rejected = [r for r in responses if r.status == 422]
 
     expect(len(created) + len(rejected) == n,
-           "every request must either succeed or be cleanly rejected 422",
+           "every request must either succeed or be cleanly rejected 422. A 500 under "
+           "contention tells the customer nothing, and their retry joins the queue again.",
            sorted(r.status for r in responses))
     expect(len(created) <= start,
            f"OVERSOLD: {len(created)} orders held against {start} available. "
            "Lock the ticket_type row inside the transaction before checking "
            "availability — SELECT ... FOR UPDATE, or an equivalent.",
+           [r.status for r in responses])
+
+    expect(len(created) == min(start, n),
+           f"UNDERSOLD: {len(created)} orders for {start} seats and {n} buyers. The lock "
+           "should queue buyers, not turn them away — everyone who reaches a seat that is "
+           "still free must get it. Rejecting under contention (NOWAIT, or a serialisation "
+           "failure answered as 422) is a sold-out page with seats still on sale.",
            [r.status for r in responses])
 
     remaining = availability(ctx, TINY)
@@ -54,8 +66,8 @@ def c7(ctx):
 def c10(ctx):
     """
     Requires the app to run with a short hold TTL. Set both:
-        HOLD_TTL_SECONDS=5   on the app
-        HOLD_TTL_SECONDS=5   in this suite's environment
+        HOLD_TTL_SECONDS=6   on the app
+        HOLD_TTL_SECONDS=6   in this suite's environment
     """
     ttl = os.environ.get("HOLD_TTL_SECONDS")
     if not ttl:
@@ -117,16 +129,18 @@ def c15(ctx):
            session.get("payment_method_types"))
 
     psp_complete(ctx, sid, succeed=0)
-    time.sleep(1.5)
 
-    order = get_order(ctx, order_id)
-    expect(order["status"] == "awaiting_payment",
-           "a decline moved the order. The customer is still on the payment page and "
-           "the next card goes against the same session.", order)
-    expect(availability(ctx, PROBE) == before - 1,
-           "a decline gave the seats back. During a sell-out, someone else takes them "
-           "while this customer is typing in their second card.",
-           f"before={before} now={availability(ctx, PROBE)}")
+    def unmoved():
+        order = get_order(ctx, order_id)
+        expect(order["status"] == "awaiting_payment",
+               "a decline moved the order. The customer is still on the payment page and "
+               "the next card goes against the same session.", order)
+        now = availability(ctx, PROBE)
+        expect(now == before - 1,
+               "a decline gave the seats back. During a sell-out, someone else takes them "
+               "while this customer is typing in their second card.",
+               f"before={before} now={now}")
+    steady(unmoved)
 
     time.sleep(ttl + 8)
 

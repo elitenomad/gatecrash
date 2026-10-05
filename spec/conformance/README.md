@@ -25,12 +25,14 @@ python3 run.py --base-url http://localhost:3000
 --list              show the catalogue
 --psp-url URL       fake-psp control plane (default http://localhost:4242)
 --admin-token TOK   bearer for /api/admin routes
+--allow-skips       exit 0 even if a case skipped
 ```
 
 **Reseed before every run.** Several cases consume inventory; `C7` drains a tier on purpose.
 
 `C10`, `C15` and `C17` need a short hold TTL. Set `HOLD_TTL_SECONDS=6` on *both* the app and
-the suite, or they skip.
+the suite, or they skip. A skip fails the run — it is a case that did not run — unless you
+pass `--allow-skips`.
 
 ## The cases
 
@@ -60,17 +62,14 @@ the suite, or they skip.
 
 A test that has never failed proves nothing. The suite is checked in both directions:
 
-- it passes, 19/19, against [`../reference/`](../reference/)
-- it is mutation-tested — the reference is deliberately broken twenty-one ways (signature
-  check removed, only the last `v1` checked, any signature scheme accepted, dedupe removed, idempotency replay removed, floats for money,
-  read-then-write availability, paid-on-redirect, fee netted off revenue, tolerance
-  check removed, sweeper skipping `awaiting_payment`, sweeper releasing seats without
-  closing the payment page or after the customer paid, a decline releasing the seats, a
-  decline marking the payment failed, the session not pinned to cards, a new checkout
-  leaving the old session open, a refused expiry ignored, reconciler booking an
-  estimate before the fee is reported, reconciler
-  never booking the fee, reconciler booking it on every run) and
-  **21/21 mutations are caught by the expected case**
+- it passes, 19/19, against [`../reference/`](../reference/) — and `mutation_test.py`
+  checks that first, because a mutation "caught" by a suite that fails anyway proves
+  nothing
+- it is mutation-tested: the reference is broken thirty-three ways — signatures,
+  idempotency, money, concurrency, the redirect, the sweeper, declines, checkout and the
+  reconciler, each listed in `MUTATIONS` — and **33/33 are caught by the expected case,
+  failing with the message written for that bug**. A mutation caught by some other
+  assertion reports `WRONG`, because the check meant for it has still never fired
 
 Re-run that check after adding or editing a case.
 

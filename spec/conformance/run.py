@@ -16,6 +16,7 @@ Options:
     --list              show the case catalogue and exit
     --psp-url URL       fake-psp control plane (default http://localhost:4242)
     --admin-token TOK   bearer token for /api/admin routes
+    --allow-skips       exit 0 even if a case skipped (by default a skip fails the run)
 """
 
 import argparse
@@ -77,6 +78,8 @@ def main():
     p.add_argument("--seed", default=str(HERE.parent / "fixtures" / "seed.json"))
     p.add_argument("--only", default="")
     p.add_argument("--list", action="store_true")
+    p.add_argument("--allow-skips", action="store_true",
+                   help="exit 0 when cases skip; by default a skip fails the run")
     args = p.parse_args()
 
     cases = sorted(REGISTRY, key=_order)
@@ -139,6 +142,11 @@ def main():
           + (f"  {YELLOW}{skipped} skipped{OFF}" if skipped else "")
           + (f"  {RED}{failed} failed{OFF}" if failed else "")
           + f"  {DIM}in {time.time() - started:.1f}s{OFF}\n")
+    if skipped and not args.allow_skips:
+        # A skip is a case that did not run, and a run with one is not a pass.
+        print(f"  {YELLOW}A skip is not a pass. Fix its precondition, or pass "
+              f"--allow-skips to accept it.{OFF}\n")
+        return 1
     return 1 if failed else 0
 
 
