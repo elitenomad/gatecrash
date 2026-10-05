@@ -113,6 +113,16 @@ module Orders
       assert_equal :fulfilled, Payments::Fulfil.call(session: completed)
     end
 
+    test "a session the provider has forgotten does not hold the seats forever" do
+      psp = FakePsp.new
+      payment = Payments::StartCheckout.call(order: @order, psp:).payment
+      psp.statuses.delete(payment.provider_ref)
+      lapse!
+
+      assert_equal 1, Orders::ExpireHolds.call(psp:)
+      assert_equal 0, @tt.reload.quantity_held
+    end
+
     test "keeps the seats held while the provider cannot be reached" do
       psp = FakePsp.new
       payment = Payments::StartCheckout.call(order: @order, psp:).payment

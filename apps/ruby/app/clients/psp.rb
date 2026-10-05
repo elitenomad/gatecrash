@@ -2,9 +2,10 @@ require "net/http"
 
 # Thin port over the payment provider.
 #
-# Everything provider-shaped lives behind this class so the rest of the
-# application talks about checkout sessions and events, not about Stripe. When
-# a second provider arrives, this is the only file that grows a sibling.
+# Every call to the provider goes through this class, so the network, the
+# retries and the error classes live in one place. What comes back is still
+# Stripe-shaped — a few services read its fields — but the rest of the
+# application never opens a connection.
 #
 # Deliberately no SDK. Speaking the HTTP directly is a chapter of its own, and
 # it means the only thing that can break on a provider upgrade is right here.
@@ -23,8 +24,10 @@ class Psp
     end
   end
 
-  # The provider understood the request and said no. Sending it again unchanged
-  # produces the same answer.
+  # Sending it again unchanged will not change the answer. Usually that answer
+  # is no: the provider understood the request and refused it. A 500 the
+  # provider says not to retry lands here too, and its outcome is unknown, not
+  # refused — the webhook, not a retry, is what settles it.
   class RequestError < Error; end
 
   # Nobody said no. The answer never arrived, or arrived as a 429 or a 5xx.
@@ -55,8 +58,9 @@ class Psp
   # Failures below HTTP. From here they are indistinguishable: the request may
   # never have arrived, or it may have been executed and the reply lost.
   TRANSPORT_ERRORS = [
-    Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EHOSTUNREACH, Errno::EPIPE,
-    EOFError, IOError, SocketError, Net::OpenTimeout, Net::ReadTimeout
+    Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::ECONNABORTED, Errno::EHOSTUNREACH,
+    Errno::ENETUNREACH, Errno::ETIMEDOUT, Errno::EPIPE, EOFError, IOError, SocketError,
+    OpenSSL::SSL::SSLError, Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout
   ].freeze
 
   # A web request cannot afford to sleep longer than this. A provider asking for
@@ -157,7 +161,8 @@ class Psp
       req["Content-Type"] = "application/x-www-form-urlencoded"
       # Generated once, OUTSIDE the retry loop. That is the whole trick: a retry
       # carrying the same key is recognisable to the provider as the same
-      # request, so a lost reply cannot become a second charge.
+      # request, so a lost reply cannot become a second session — a second
+      # page, with nobody holding its address, that could still take money.
       req["Idempotency-Key"] = idempotency_key || SecureRandom.uuid
       req.body = URI.encode_www_form(form)
       request(req)
@@ -188,8 +193,12 @@ class Psp
       req["Authorization"] = "Bearer #{secret_key}"
       req["Stripe-Version"] = API_VERSION
       uri = req.uri
+      # max_retries: 0 because the loop above is the retry policy. Net::HTTP's
+      # own default quietly retries an idempotent request once more on a
+      # timeout, which would turn three attempts into six.
       response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == "https",
-                                 read_timeout: 10, open_timeout: 5) do |http|
+                                 read_timeout: 10, open_timeout: 5, write_timeout: 10,
+                                 max_retries: 0) do |http|
         http.request(req)
       end
       interpret(response)

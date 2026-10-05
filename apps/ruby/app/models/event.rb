@@ -13,6 +13,8 @@ class Event < ApplicationRecord
 
   def to_param = slug
 
+  # Nil while the event has no ticket types. Its ticket types share a currency
+  # (TicketType makes sure), so the comparison below never crosses one.
   def price_from
     ticket_types.map(&:price).min
   end

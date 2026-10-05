@@ -1,30 +1,39 @@
 module Orders
   # Creates an order and holds inventory, exactly once per Idempotency-Key.
   class Create
-    Result = Struct.new(:order, :error, :status, keyword_init: true) do
+    Result = Struct.new(:order, :error, :status, :errors, keyword_init: true) do
       def ok? = error.nil?
     end
 
     HOLD_TTL = Integer(ENV.fetch("HOLD_TTL_SECONDS", 900)).seconds
+
+    # What openapi.yaml allows for one line of an order.
+    QUANTITY = 1..10
 
     def self.call(...) = new(...).call
 
     def initialize(event_id:, email:, items:)
       @event_id = event_id
       @email = email
-      @items = items || []
+      @items = items
     end
 
     def call
-      return failure("Order must contain at least one item") if @items.empty?
+      if (errors = malformed).any?
+        return Result.new(error: "The request does not match the contract", status: 422, errors:)
+      end
 
       event = Event.find_by(id: @event_id)
       return failure("Unknown event", 422) if event.nil?
+      return failure("#{event.name} is not on sale (it is #{event.status})") unless event.status == "on_sale"
 
       order = nil
-      ActiveRecord::Base.transaction do
+      # A savepoint, not a transaction of its own: the idempotency wrapper holds
+      # one open around this so the order and its stored response commit
+      # together. A rejection here must undo the hold, and only the hold.
+      ActiveRecord::Base.transaction(requires_new: true) do
         requested = @items.group_by { |i| i["ticket_type_id"] }
-                          .transform_values { |rows| rows.sum { |r| r["quantity"].to_i } }
+                          .transform_values { |rows| rows.sum { |r| r["quantity"] } }
 
         # Lock every ticket_type row BEFORE reading availability, ordered by id
         # so concurrent orders touching the same tiers cannot deadlock.
@@ -33,7 +42,6 @@ module Orders
         lines = requested.map do |ticket_type_id, quantity|
           tt = locked[ticket_type_id]
           raise Rejected.new("Unknown ticket type") if tt.nil? || tt.event_id != event.id
-          raise Rejected.new("Quantity must be positive") unless quantity.positive?
           raise Rejected.new("Only #{tt.available} remaining for #{tt.name}") if quantity > tt.available
 
           [tt, quantity]
@@ -72,6 +80,30 @@ module Orders
     private
 
     class Rejected < StandardError; end
+
+    # The body checked against CreateOrderRequest before anything is looked up.
+    # `to_i` would quietly turn "5" into 5 and 1.9 into 1; a body that is not
+    # what the contract says is a client bug, and it is worth naming each part.
+    def malformed
+      errors = []
+      errors << error("email", "must be an email address") unless @email.is_a?(String) && @email.match?(URI::MailTo::EMAIL_REGEXP)
+      errors << error("event_id", "is required") unless @event_id.is_a?(String) && @event_id.present?
+      return errors << error("items", "must be a list of at least one item") unless @items.is_a?(Array) && @items.any?
+
+      @items.each_with_index do |item, i|
+        unless item.is_a?(Hash) && item.keys.sort == %w[quantity ticket_type_id]
+          errors << error("items[#{i}]", "must have a ticket_type_id and a quantity, and nothing else")
+          next
+        end
+        errors << error("items[#{i}].ticket_type_id", "must be a string") unless item["ticket_type_id"].is_a?(String)
+        unless item["quantity"].is_a?(Integer) && QUANTITY.cover?(item["quantity"])
+          errors << error("items[#{i}].quantity", "must be a whole number from #{QUANTITY.min} to #{QUANTITY.max}")
+        end
+      end
+      errors
+    end
+
+    def error(field, message) = { field:, message: }
 
     def failure(message, status = 422) = Result.new(error: message, status:)
   end

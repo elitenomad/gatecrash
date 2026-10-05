@@ -8,6 +8,13 @@ class TicketTypeTest < ActiveSupport::TestCase
     assert_equal 5, @tt.available
   end
 
+  test "an event sells in one currency" do
+    yen = TicketType.new(event: @tt.event, name: "Yen", price_amount: 4000, price_currency: "JPY",
+                         quantity_total: 1, quantity_held: 0, quantity_sold: 0)
+    assert_not_predicate yen, :valid?
+    assert_includes yen.errors[:price_currency], "must match the event's other ticket types"
+  end
+
   test "price is a Money" do
     assert_equal Money.new(4500, "GBP"), @tt.price
   end

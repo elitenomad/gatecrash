@@ -13,7 +13,14 @@ module Payments
 
     def call
       payment = Payment.find_by(provider: "stripe", provider_ref: @session["id"])
-      return :unknown_payment if payment.nil?
+      if payment.nil?
+        # A completed session we have no row for: created outside this app, or
+        # by a checkout whose transaction rolled back after the provider said
+        # yes. Either way money may have moved, and nobody here knows why.
+        Rails.logger.error("UNKNOWN SESSION: #{@session['id']} completed with no payment " \
+                           "recorded against it; nothing issued")
+        return :unknown_payment
+      end
       return :already_fulfilled if payment.succeeded?
 
       # Completed is not paid. For a card the two arrive together; for a bank
@@ -43,9 +50,9 @@ module Payments
         else
           # The provider says this money arrived, and that is true whether or
           # not we can deliver against it. Note there is no early `return` in
-          # this block: Rails 7.0 rolled a transaction back on `return` and 8.0
-          # commits it, and the record of a payment must not depend on which
-          # version is installed.
+          # this block: Rails 7.0 rolled a transaction back on `return`, and
+          # 7.2 and later commit it, and the record of a payment must not depend
+          # on which version is installed.
           payment.update!(status: "succeeded")
 
           if order.paid?

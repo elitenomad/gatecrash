@@ -22,6 +22,13 @@ module Payments
       assert_nil @order.hold_expires_at
     end
 
+    test "a completed session with no payment on file is logged, not swallowed" do
+      logged = capture_log do
+        assert_equal :unknown_payment, Fulfil.call(session: { "id" => "cs_unknown", "payment_status" => "paid" })
+      end
+      assert_match(/UNKNOWN SESSION: cs_unknown/, logged)
+    end
+
     test "issues unguessable, unique ticket codes" do
       Fulfil.call(session: session)
       codes = @order.reload.tickets.map(&:code)

@@ -72,6 +72,18 @@ module ActiveSupport
       sqls
     end
 
+    # Everything the block logged. For the failures that are meant to be loud:
+    # a log line is the only thing that tells anyone they happened.
+    def capture_log
+      io = StringIO.new
+      original = Rails.logger
+      Rails.logger = ActiveSupport::Logger.new(io)
+      yield
+      io.string
+    ensure
+      Rails.logger = original
+    end
+
     def sign_payload(body, secret: Psp.webhook_secret, timestamp: Time.current.to_i)
       digest = OpenSSL::HMAC.hexdigest("SHA256", secret, "#{timestamp}.#{body}")
       "t=#{timestamp},v1=#{digest}"

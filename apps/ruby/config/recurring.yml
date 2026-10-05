@@ -7,12 +7,25 @@ development: &default
   book_fees:
     class: BookFeesJob
     schedule: every 5 seconds
+  # Every minute, not every hour: an abandoned claim answers 409 until this
+  # runs, and the claim is abandoned after five minutes.
   prune_idempotency_keys:
     class: PruneIdempotencyKeysJob
-    schedule: every hour
+    schedule: every minute
 
+# Its own pace. Every second suits a six-second test hold; with fifteen-minute
+# holds a sweep every fifteen seconds is plenty, and a fee that takes up to an
+# hour to appear can wait a minute to be booked.
 production:
-  <<: *default
+  expire_holds:
+    class: ExpireHoldsJob
+    schedule: every 15 seconds
+  book_fees:
+    class: BookFeesJob
+    schedule: every minute
+  prune_idempotency_keys:
+    class: PruneIdempotencyKeysJob
+    schedule: every minute
 
 test:
   expire_holds:

@@ -59,11 +59,14 @@ module Payments
       end
       return failure(refusal, 409) if refusal
 
-      # The provider decides when its session dies, so read that back rather
-      # than asserting a duration of our own. A locally-invented expiry agrees
-      # with the provider right up until the day it quietly does not.
+      # Two clocks, and the customer needs the earlier one. The provider decides
+      # when its page dies, so that is read back rather than assumed; the hold
+      # is ours, and past it the page sells seats the sweeper is about to give
+      # back. With a fifteen-minute hold and a thirty-minute session, the hold
+      # is the one that counts.
+      page_closes = Time.at(session.fetch("expires_at")).utc
       Result.new(payment:, checkout_url: session.fetch("url"),
-                 expires_at: Time.at(session.fetch("expires_at")).utc)
+                 expires_at: [page_closes, @order.hold_expires_at].compact.min)
     rescue Psp::Error => e
       Rails.logger.error("psp checkout failed: #{e.message}")
       failure("Payment provider unavailable", 502)

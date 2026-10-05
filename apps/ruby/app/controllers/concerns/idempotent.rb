@@ -10,10 +10,18 @@
 module Idempotent
   extend ActiveSupport::Concern
 
+  # The length the contract allows. A key of several kilobytes is not a key; it
+  # is a request to index something larger than a btree entry can hold.
+  KEY_LENGTH = 8..255
+
   def idempotent
     key = request.headers["Idempotency-Key"].presence
     return problem(422, "Idempotency-Key required",
                    "Every request that creates money-moving state must carry one") if key.nil?
+    unless KEY_LENGTH.cover?(key.length)
+      return problem(422, "Idempotency-Key invalid",
+                     "A key must be #{KEY_LENGTH.min} to #{KEY_LENGTH.max} characters; a UUID is ideal")
+    end
 
     fingerprint = IdempotencyKey.fingerprint(request.method, request.path, request.raw_post)
 
@@ -27,17 +35,22 @@ module Idempotent
       return replay(IdempotencyKey.find_by(key:), fingerprint)
     end
 
+    # The work and its stored response commit together, or not at all. Stored
+    # afterwards, an error between the two would leave an order with no answer
+    # on file, and the client's retry would make a second one.
     begin
-      yield
+      ActiveRecord::Base.transaction do
+        yield
+        record.update!(response_status: response.status,
+                       response_body: { "raw" => response.body, "media_type" => response.media_type },
+                       locked_at: nil)
+      end
     rescue StandardError
-      # Never leave a claimed-but-unanswered key behind: it would 409 forever.
+      # Nothing was committed, so release the claim: left behind, it would
+      # answer 409 to the client's honest retry until the prune clears it.
       record.destroy
       raise
     end
-
-    record.update!(response_status: response.status,
-                   response_body: { "raw" => response.body },
-                   locked_at: nil)
   end
 
   private
@@ -52,10 +65,11 @@ module Idempotent
 
     return problem(409, "Request in flight", "The original request has not finished") unless record.completed?
 
-    # Byte-for-byte. Re-serialising the order is not enough — timestamps and
-    # association ordering drift, and clients diff these responses.
+    # Byte-for-byte, and with the media type it was first sent with: a stored
+    # 422 is a problem document, and a client that branches on the content type
+    # must not see it change on the replay.
     render status: record.response_status,
            body: record.response_body.fetch("raw"),
-           content_type: "application/json"
+           content_type: record.response_body.fetch("media_type", "application/json")
   end
 end

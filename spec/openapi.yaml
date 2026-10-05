@@ -98,8 +98,10 @@ paths:
           $ref: "#/components/responses/Problem"
         "422":
           description: |
-            Validation failure, insufficient availability, or idempotency-key reuse
-            with a different payload.
+            A body that does not match `CreateOrderRequest`, an event that is not
+            on sale, insufficient availability, a missing `Idempotency-Key` or one
+            outside 8–255 characters, or idempotency-key reuse with a different
+            payload. A malformed body lists each problem in `errors`.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
@@ -150,7 +152,13 @@ paths:
                 properties:
                   payment_id: { type: string, format: uuid }
                   checkout_url: { type: string, format: uri }
-                  expires_at: { type: string, format: date-time }
+                  expires_at:
+                    type: string
+                    format: date-time
+                    description: |
+                      When the URL stops being worth following: the earlier of the
+                      provider session's expiry and the order's hold. Past it, either
+                      the page refuses payment or the seats it sells are no longer held.
           description: Session created
         "404":
           $ref: "#/components/responses/Problem"
@@ -367,7 +375,11 @@ components:
         starts_at: { type: string, format: date-time }
         venue_name: { type: string }
         status: { $ref: "#/components/schemas/EventStatus" }
-        price_from: { $ref: "#/components/schemas/Money" }
+        price_from:
+          description: The cheapest ticket type's price; null while an event has no ticket types.
+          oneOf:
+            - $ref: "#/components/schemas/Money"
+            - type: "null"
 
     Event:
       allOf:

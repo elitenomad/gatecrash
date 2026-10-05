@@ -71,6 +71,56 @@ class OrdersTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_content
   end
 
+  test "a replayed error keeps the media type it was first sent with" do
+    key = SecureRandom.uuid
+    create_order(payload(quantity: 999), key:)
+    assert_equal "application/problem+json", response.media_type
+
+    create_order(payload(quantity: 999), key:)
+    assert_response :unprocessable_content
+    assert_equal "application/problem+json", response.media_type,
+                 "a client that branches on the content type must not see it change on a replay"
+  end
+
+  test "a malformed body is a problem document naming each field" do
+    create_order({ event_id: @tt.event_id, email: "buyer@example.test",
+                   items: [{ ticket_type_id: @tt.id, quantity: "5" }, 1] })
+    assert_response :unprocessable_content
+    assert_equal "application/problem+json", response.media_type
+    assert_equal %w[items[0].quantity items[1]], response.parsed_body["errors"].map { |e| e["field"] }
+    assert_equal 0, @tt.reload.quantity_held
+  end
+
+  test "an Idempotency-Key must be 8 to 255 characters" do
+    ["short", "k" * 256].each do |key|
+      create_order(key:)
+      assert_response :unprocessable_content
+      assert_match(/8 to 255/, response.parsed_body["detail"])
+    end
+    assert_equal 0, Order.count
+    assert_equal 0, IdempotencyKey.count
+  end
+
+  test "an error after the order is made leaves neither the order nor the key behind" do
+    # The order and its stored response commit together. Committed apart, the
+    # order would survive this and the client's retry would make a second one.
+    key = SecureRandom.uuid
+    original = OrderSerializer.instance_method(:as_json)
+    OrderSerializer.define_method(:as_json) { |*| raise "the serializer fell over" }
+    begin
+      assert_raises(RuntimeError) { create_order(key:) }
+    ensure
+      OrderSerializer.define_method(:as_json, original)
+    end
+    assert_equal 0, Order.count
+    assert_equal 0, @tt.reload.quantity_held
+    assert_nil IdempotencyKey.find_by(key:), "a key left claimed answers 409 to the honest retry"
+
+    create_order(key:)
+    assert_response :created
+    assert_equal 1, Order.count
+  end
+
   test "tickets are 409 until the order is paid" do
     create_order
     id = response.parsed_body["id"]

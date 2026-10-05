@@ -54,6 +54,18 @@ module Payments
       assert_equal @order.items.sum(&:quantity), @order.tickets.count
     end
 
+    test "a delayed payment method's events are ignored, loudly" do
+      # Cards only should make these impossible. If one arrives, a session got
+      # through unpinned, and somebody needs to know.
+      e = event("checkout.session.async_payment_succeeded", { "id" => @payment.provider_ref })
+
+      logged = capture_log { assert_equal :ignored, HandleEvent.call(webhook_event: e) }
+
+      assert_match(/DELAYED PAYMENT/, logged)
+      assert_predicate @order.reload, :awaiting_payment?
+      assert_not_nil e.reload.processed_at
+    end
+
     test "ignores unhandled event types but still marks them processed" do
       # Stripe emits dozens of types. Treating an unknown one as an error makes
       # the provider retry something we were never going to act on.

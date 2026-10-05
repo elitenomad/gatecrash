@@ -39,6 +39,36 @@ module Payments
       assert_equal expires, result.expires_at.to_i
     end
 
+    test "the URL expires with the hold when the hold runs out first" do
+      # The fake's sessions live thirty minutes; the hold is shorter.
+      result = StartCheckout.call(order: @order, psp: FakePsp.new)
+
+      assert_equal @order.reload.hold_expires_at.to_i, result.expires_at.to_i,
+                   "past the hold, the page sells seats the sweeper is about to give back"
+    end
+
+    test "a session the provider has never heard of is treated as closed" do
+      psp = FakePsp.new
+      first = StartCheckout.call(order: @order, psp:).payment
+      psp.statuses.delete(first.provider_ref) # a test provider restarted, say
+
+      result = StartCheckout.call(order: @order, psp:)
+
+      assert_predicate result, :ok?, "a 404 forever is a 502 forever"
+      assert_predicate first.reload, :cancelled?
+    end
+
+    test "a session completed but unpaid keeps its seats, and says so" do
+      psp = FakePsp.new
+      first = StartCheckout.call(order: @order, psp:).payment
+      psp.statuses[first.provider_ref] = "complete"
+      psp.unpaid << first.provider_ref
+
+      logged = capture_log { assert_equal 409, StartCheckout.call(order: @order, psp:).status }
+
+      assert_match(/UNPAID COMPLETION: session #{first.provider_ref}/, logged)
+    end
+
     test "a provider failure leaves the order exactly as it was" do
       psp = FakePsp.new(raise_error: "502: upstream on fire")
       result = StartCheckout.call(order: @order, psp:)

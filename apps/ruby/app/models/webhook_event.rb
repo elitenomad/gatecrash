@@ -1,4 +1,6 @@
-# A verbatim log of what the provider told us.
+# A log of every event the provider sent us, as parsed JSON: what it said, not
+# the bytes it said it in. The raw body is checked against the signature and
+# then let go — jsonb keeps neither whitespace nor key order.
 #
 # Deliberately has no foreign key into orders: an event must be recordable
 # before we know whether the thing it references exists or is even valid.

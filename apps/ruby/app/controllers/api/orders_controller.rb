@@ -6,15 +6,15 @@ module Api
       # The whole action runs inside the idempotency wrapper, which stores the
       # rendered bytes and replays them verbatim on a repeat key.
       idempotent do
-        result = Orders::Create.call(
-          event_id: params[:event_id], email: params[:email],
-          items: params.fetch(:items, []).map { |i| i.permit(:ticket_type_id, :quantity).to_h }
-        )
+        # The parsed body as the client sent it, types included, so the service
+        # can hold it to the contract: a quantity of "5" is not a quantity.
+        body = request.request_parameters
+        result = Orders::Create.call(event_id: body["event_id"], email: body["email"], items: body["items"])
 
         if result.ok?
           render json: OrderSerializer.new(result.order).as_json, status: :created
         else
-          problem(result.status || 422, "Order rejected", result.error)
+          problem(result.status || 422, "Order rejected", result.error, errors: result.errors)
         end
       end
     end

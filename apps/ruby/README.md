@@ -101,7 +101,7 @@ bin/rails runner 'TicketType.first.update_column(:quantity_held, 10_000)'
 ## Tests
 
 ```sh
-make ruby-test    # 176 runs, 603 assertions — no PSP, no worker, no network
+make ruby-test    # 192 runs, 699 assertions — no PSP, no worker, no network
 ```
 
 Minitest, no factories, no mocking library. The conformance suite is black-box and

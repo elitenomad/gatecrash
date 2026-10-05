@@ -81,6 +81,10 @@ connected account and payout schedule.
 | `venue_name` | string | Volume 1 keeps venue as a flat field |
 | `status` | enum | `draft`, `on_sale`, `sold_out`, `cancelled`, `completed` |
 
+Orders are taken only while an event is `on_sale`. Nothing in Volume 1 moves an event
+between statuses, but a cancelled show must not go on selling tickets because nobody
+wrote the check.
+
 ### TicketType
 A priced tier within an event. **This row owns inventory.**
 
@@ -94,6 +98,10 @@ A priced tier within an event. **This row owns inventory.**
 | `quantity_total` | int | |
 | `quantity_held` | int | reserved by unpaid orders |
 | `quantity_sold` | int | paid |
+
+All of an event's ticket types share one currency. An order cannot mix currencies, so
+an event that did could not be bought in one basket — and "from £22.50" has no meaning
+across currencies. Multi-currency events are Volume 3.
 
 Availability is `quantity_total - quantity_held - quantity_sold`. Keeping *held* and
 *sold* as separate counters — rather than one `quantity_remaining` — is what makes hold
@@ -174,7 +182,7 @@ Received provider events. Exists for replay protection and for the audit trail.
 | `provider` | string | |
 | `provider_event_id` | string | **unique with provider** — this is the replay guard |
 | `type` | string | |
-| `payload` | jsonb | raw body as received |
+| `payload` | jsonb | the event as received, parsed. The raw body is what the signature is checked against, and is not kept: `jsonb` keeps neither whitespace nor key order, so this records what the provider said, not the bytes it sent |
 | `received_at` | timestamptz | |
 | `processed_at` | timestamptz? | null until handled successfully |
 
@@ -186,7 +194,7 @@ For **our own inbound API**, not the provider's. Chapter 7.
 | `key` | string | client-supplied, unique |
 | `request_fingerprint` | string | hash of method + path + body |
 | `response_status` | int | |
-| `response_body` | jsonb | |
+| `response_body` | jsonb | the response's exact bytes and its media type, replayed verbatim |
 | `locked_at` | timestamptz? | in-flight guard for concurrent replays |
 | `created_at` | timestamptz | |
 
@@ -388,7 +396,7 @@ POST /api/orders/{id}/checkout
        │         one) ──▶ 409; record nothing, and this URL never leaves either
        ├─ create Payment (requires_payment, provider_ref = session id)
        └─ order ──▶ awaiting_payment (unless it already is)
-     return { checkout_url, expires_at }
+     return { checkout_url, expires_at = the earlier of the session's expiry and the hold's }
 ```
 
 A second call on an `awaiting_payment` order is legitimate — the customer left the

@@ -11,6 +11,10 @@ class TicketType < ApplicationRecord
   validates :quantity_total, :quantity_held, :quantity_sold,
             numericality: { greater_than_or_equal_to: 0 }
 
+  # One currency per event. An order cannot mix currencies, so an event that did
+  # could not be bought in one basket, and "from £22.50" would mean nothing.
+  validate :same_currency_as_the_rest_of_its_event, if: :price_currency_changed?
+
   # Held and sold are tracked separately, not collapsed into one "remaining"
   # counter. Expiry has to know how much to give back, and reconciliation has to
   # be able to tell a lapsed hold apart from a completed sale.
@@ -24,5 +28,12 @@ class TicketType < ApplicationRecord
   # rest.
   def self.lock_for_update(ids)
     where(id: ids).order(:id).lock("FOR UPDATE").index_by(&:id)
+  end
+
+  private
+
+  def same_currency_as_the_rest_of_its_event
+    others = TicketType.where(event_id:).where.not(id:).where.not(price_currency:)
+    errors.add(:price_currency, "must match the event's other ticket types") if others.exists?
   end
 end

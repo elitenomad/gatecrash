@@ -43,6 +43,8 @@ class PspTransportTest < ActiveSupport::TestCase
       @received << Recorded.new(verb, path, headers, length.positive? ? socket.read(length) : nil)
 
       status, extra, body = @responder.call(@received.size)
+      return if status == :hang_up # close the connection without a word
+
       socket.write("HTTP/1.1 #{status} Status\r\n")
       extra.each { |key, value| socket.write("#{key}: #{value}\r\n") }
       socket.write("Content-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}")
@@ -112,6 +114,15 @@ class PspTransportTest < ActiveSupport::TestCase
     assert_equal Psp::MAX_ATTEMPTS, stub.received.size
   end
 
+  test "a reply that never comes is retried by our loop and nothing else" do
+    # Net::HTTP quietly retries an idempotent request once more by default,
+    # which would turn three attempts into six.
+    stub = provider { [:hang_up] }
+
+    assert_raises(Psp::TransientError) { Psp.checkout_session("cs_1") }
+    assert_equal Psp::MAX_ATTEMPTS, stub.received.size
+  end
+
   test "a refused connection is transient" do
     ENV["PSP_URL"] = "http://127.0.0.1:1" # nothing is listening here
 
@@ -128,7 +139,7 @@ class PspTransportTest < ActiveSupport::TestCase
     assert_equal 2, keys.size
     assert_predicate keys.first, :present?
     assert_equal keys.first, keys.last,
-                 "a retry carrying a fresh key is a second charge waiting to happen"
+                 "a retry with a fresh key is a second request, and to an endpoint that moves money, a second charge"
   end
 
   test "authenticates every request as a bearer token" do
@@ -148,7 +159,7 @@ class PspTransportTest < ActiveSupport::TestCase
     form = URI.decode_www_form(stub.received.sole.body).to_h
     assert_equal "4000", form["line_items[0][price_data][unit_amount]"], "no /100 anywhere"
     assert_equal "jpy", form["line_items[0][price_data][currency]"]
-    assert_equal order.id, form["client_reference_id"], "the thread that leads the webhook home"
+    assert_equal order.id, form["client_reference_id"], "how a person gets from the provider's dashboard to the order"
   end
 
   test "every session is opened for cards only" do

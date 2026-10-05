@@ -23,16 +23,38 @@ module Payments
       @order.payments.where(status: "requires_payment").each do |payment|
         begin
           @psp.expire_checkout_session(payment.provider_ref)
-        rescue Psp::RequestError
-          case @psp.checkout_session(payment.provider_ref).fetch("status")
-          when "complete" then return false
-          when "expired"  then nil # it lapsed on its own; record that and go on
-          else raise
+        rescue Psp::RequestError => e
+          if e.status == 404
+            # The provider has never heard of it — a test provider restarted,
+            # or keys from another account. A page that does not exist cannot
+            # take money, and keeping the seats for it would keep them forever.
+            Rails.logger.warn("session #{payment.provider_ref} is unknown to the provider; treating it as closed")
+          else
+            session = @psp.checkout_session(payment.provider_ref)
+            case session.fetch("status")
+            when "complete"
+              warn_if_unpaid(session)
+              return false
+            when "expired" then nil # it lapsed on its own; record that and go on
+            else raise
+            end
           end
         end
         payment.update!(status: "cancelled")
       end
       true
+    end
+
+    private
+
+    # Completed is not paid. Only a delayed payment method completes unpaid,
+    # and the cards-only pin should make that impossible; if one gets through,
+    # these seats stay held until someone looks, so make sure someone does.
+    def warn_if_unpaid(session)
+      return if session["payment_status"] == "paid"
+
+      Rails.logger.error("UNPAID COMPLETION: session #{session['id']} on order #{@order.id} is complete " \
+                         "with payment_status=#{session['payment_status'].inspect}; its seats stay held")
     end
   end
 end

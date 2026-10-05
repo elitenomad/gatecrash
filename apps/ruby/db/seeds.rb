@@ -8,6 +8,12 @@ FIXTURE = Rails.root.join("../../spec/fixtures/seed.json").cleanpath
 
 data = JSON.parse(File.read(FIXTURE))
 
+# Seeding starts by deleting every order, payment and ledger row. That is right
+# for a development or test database and catastrophic anywhere else.
+unless Rails.env.local?
+  abort "db/seeds.rb wipes orders, payments and the ledger; refusing to run in #{Rails.env}"
+end
+
 ActiveRecord::Base.transaction do
   LedgerEntry.delete_all
   LedgerTransaction.delete_all

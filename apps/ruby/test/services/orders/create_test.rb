@@ -27,10 +27,11 @@ module Orders
     end
 
     test "rejects more than is available" do
-      result = create(items: [line(quantity: 11)])
+      small = build_ticket_type(event: @tt.event, total: 3)
+      result = create(items: [line(small, quantity: 4)])
       assert_not_predicate result, :ok?
-      assert_match(/remaining/, result.error)
-      assert_equal 0, @tt.reload.quantity_held
+      assert_match(/Only 3 remaining/, result.error)
+      assert_equal 0, small.reload.quantity_held
     end
 
     test "counts held inventory as unavailable" do
@@ -60,7 +61,11 @@ module Orders
     end
 
     test "refuses to mix currencies in one order" do
-      yen = build_ticket_type(event: @tt.event, amount: 4000, currency: "JPY")
+      # TicketType refuses a second currency on one event; this is the check
+      # behind it, for a row that got in some other way.
+      yen = TicketType.new(event: @tt.event, name: "Yen", price_amount: 4000, price_currency: "JPY",
+                           quantity_total: 10, quantity_held: 0, quantity_sold: 0)
+      yen.save!(validate: false)
       result = create(items: [line, line(yen)])
       assert_not_predicate result, :ok?
       assert_match(/currenc/i, result.error)
@@ -79,6 +84,36 @@ module Orders
       create(items: [line(quantity: 1), line(other, quantity: 5)])
       assert_equal 0, @tt.reload.quantity_held
       assert_equal 0, other.reload.quantity_held
+      assert_equal 0, Order.count
+    end
+
+    test "takes orders only while the event is on sale" do
+      %w[draft sold_out cancelled completed].each do |status|
+        @tt.event.update!(status:)
+        result = create(items: [line])
+        assert_not_predicate result, :ok?, "a #{status} event must not sell tickets"
+        assert_match(/not on sale/, result.error)
+      end
+      assert_equal 0, @tt.reload.quantity_held
+    end
+
+    test "holds the request to the contract, and names every problem" do
+      cases = {
+        "a quantity as a string" => [[{ "ticket_type_id" => @tt.id, "quantity" => "5" }], "items[0].quantity"],
+        "a fractional quantity" => [[{ "ticket_type_id" => @tt.id, "quantity" => 1.9 }], "items[0].quantity"],
+        "more than ten of one tier" => [[line(quantity: 11)], "items[0].quantity"],
+        "items that are not a list" => ["x", "items"],
+        "an item that is not an object" => [[1], "items[0]"],
+        "an unknown field on an item" => [[line.merge("seat" => "A1")], "items[0]"]
+      }
+      cases.each do |what, (items, field)|
+        result = create(items:)
+        assert_not_predicate result, :ok?, what
+        assert_includes result.errors.map { |e| e[:field] }, field, what
+      end
+
+      assert_equal ["email"], create(items: [line], email: nil).errors.map { |e| e[:field] }
+      assert_equal 0, @tt.reload.quantity_held
       assert_equal 0, Order.count
     end
 

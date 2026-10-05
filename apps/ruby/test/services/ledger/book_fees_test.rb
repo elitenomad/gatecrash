@@ -16,16 +16,6 @@ module Ledger
       order.reload
     end
 
-    def capture_log
-      io = StringIO.new
-      original = Rails.logger
-      Rails.logger = ActiveSupport::Logger.new(io)
-      yield
-      io.string
-    ensure
-      Rails.logger = original
-    end
-
     # A fee reader that answers like the provider would, without a provider.
     def reports(fee, ref: nil, at: Time.zone.at(1_800_000_000))
       lambda do |payment|
